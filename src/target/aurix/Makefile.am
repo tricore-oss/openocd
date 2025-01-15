@@ -3,5 +3,6 @@
 noinst_LTLIBRARIES += %D%/libaurix.la
 %C%_libaurix_la_SOURCES = \
 	%D%/aurix.c \
-	%D%/aurix_ocds.c
+	%D%/aurix_ocds.c \
+	%D%/tricore.c
 	
