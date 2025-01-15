@@ -149,7 +149,17 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
         pl0_size += sizeof(tas_pl0rq_rdblk_st);
       }
     } else {
-      if (req->cmd < TAS_PL0_CMD_WRBLK) {
+      if (req->cmd == TAS_PL0_CMD_WR64) {
+        tas_pl0rq_wr64_st write_addr = {
+            .wl = 2,
+            .cmd = req->cmd,
+            .a15to0 = req->addr & 0xFFFF,
+        };
+        memcpy(write_addr.data, &req->data, 8);
+        memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), &write_addr,
+               sizeof(tas_pl0rq_wr64_st));
+        pl0_size += sizeof(tas_pl0rq_wr64_st);
+      } else if (req->cmd != TAS_PL0_CMD_WRBLK) {
         tas_pl0rq_wr_st write_addr = {
             .wl = 1,
             .cmd = req->cmd,
@@ -217,7 +227,8 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
       memcpy(&rsp_wr, pl0_buffer + pl0_offset, sizeof(tas_pl0rsp_wr_st));
       pl0_offset++;
       if (rsp_wr.cmd != req->cmd || rsp_wr.err != TAS_PL0_ERR_NO_ERROR ||
-          rsp_wr.wlwr != (req->count + (req->cmd == TAS_PL0_CMD_WR64 ? 1 : 0))) {
+          rsp_wr.wlwr !=
+              (req->count + (req->cmd == TAS_PL0_CMD_WR64 ? 1 : 0))) {
         client_state.con_queues[ocds->con_id].reqs_count = 0;
         return ERROR_FAIL;
       }
@@ -317,7 +328,8 @@ static int tas_client_op_queue_soc_write(struct aurix_ocds *ocds, uint32_t addr,
           .reqs[client_state.con_queues[ocds->con_id].reqs_count++] =
           (struct tas_client_pl0_req){.addr = addr,
                                       .count = 1,
-                                      .cmd = size == 4   ? TAS_PL0_CMD_WR32
+                                      .cmd = size == 8   ? TAS_PL0_CMD_WR64
+                                             : size == 4 ? TAS_PL0_CMD_WR32
                                              : size == 2 ? TAS_PL0_CMD_WR16
                                                          : TAS_PL0_CMD_WR8,
                                       .data = data};

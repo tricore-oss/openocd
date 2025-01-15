@@ -8,7 +8,6 @@ struct aurix_ocds {
   const char *name;
   struct list_head lh;
   struct jtag_tap *tap;
-  atomic_bool used;
   uint8_t con_id;
 
   const struct aurix_ocds_ops *ops;
@@ -64,6 +63,10 @@ static inline int aurix_ocds_queue_soc_write_u16(struct aurix_ocds *ocds,
 static inline int aurix_ocds_queue_soc_write_u32(struct aurix_ocds *ocds,
                                                  uint32_t addr, uint32_t data) {
   return aurix_ocds_queue_soc_write(ocds, addr, 4, 1, &data);
+}
+static inline int aurix_ocds_queue_soc_write_u64(struct aurix_ocds *ocds,
+                                                 uint32_t addr, uint64_t data) {
+  return aurix_ocds_queue_soc_write(ocds, addr, 8, 1, &data);
 }
 
 static inline int aurix_ocds_run(struct aurix_ocds *ocds) {
