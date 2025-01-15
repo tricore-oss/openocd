@@ -6,18 +6,41 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "target/aurix/aurix.h"
-#include "target/aurix/aurix_ocds.h"
 #include <flash/common.h>
 #include <flash/nor/core.h>
 #include <flash/nor/driver.h>
 #include <helper/log.h>
+#include <target/aurix/aurix.h>
+#include <target/aurix/aurix_device_family.h>
+#include <target/aurix/aurix_ocds.h>
 #include <target/target.h>
 
 struct tc3xx_flash_bank {
+  /** Address of the command sequencer */
+  target_addr_t cmd_addr;
+  /** Address of the DMU registers */
+  target_addr_t reg_addr;
+  /** Offset of the error register for a given command sequencer */
+  target_addr_t err_offset;
+  /** Offset of the status register for a ginven command sequencer */
+  target_addr_t sts_offset;
+  /** Size of a physical sector, where earase commands cannot cross */
+  uint32_t phys_sector_size;
+  /** Size of a (logical) sector. (Smallest earasable unit) */
+  uint16_t sector_size;
+  /** Number of bytes for a burst program operation */
+  uint16_t burst_size;
+  /** Number of bytes for a page program operation. (Smallest programmable unit)
+   */
+  uint16_t page_size;
+  /** Offset of the busy bit for the bank in the status register */
+  uint8_t busy_bit;
+  /** Bank probed */
   bool probed;
 };
 
+#define UCB_CHIPID 0xAE400008
+#define UCB_CHIPID_PROD 0x3C000000
 #define SCU_CHIPID 0xF0036140
 #define SCU_CHIPID_CHREV 0x3F
 #define SCU_CHIPID_CHTEC 0xC0
@@ -25,6 +48,7 @@ struct tc3xx_flash_bank {
 
 static int tc3xx_probe(struct flash_bank *bank) {
   struct tc3xx_flash_bank *tc3xx_bank = bank->driver_priv;
+  struct aurix_core *aurix = target_to_aurix(bank->target);
   uint32_t flash_addr = bank->base;
   uint32_t chipid;
   int retval;
@@ -32,27 +56,41 @@ static int tc3xx_probe(struct flash_bank *bank) {
   if (tc3xx_bank->probed)
     return ERROR_OK;
 
-  retval = target_read_u32(bank->target, SCU_CHIPID, &chipid);
-  if (retval != ERROR_OK) {
-    LOG_ERROR("Cannot read CHIPID register.");
-    return retval;
+  if (aurix_df_check_if_tc4x(aurix->ocds->tap->expected_ids[0])) {
+    retval = target_read_u32(bank->target, UCB_CHIPID, &chipid);
+    if (retval != ERROR_OK) {
+      LOG_ERROR("Cannot read CHIPID register.");
+      return retval;
+    }
+
+    if (((chipid & UCB_CHIPID_PROD) >> 26) != 13) {
+      LOG_ERROR("CHIPID register does not match tc4xx with eFLASH.");
+      return ERROR_FAIL;
+    }
+    /* TODO: Check size */
+  } else {
+    retval = target_read_u32(bank->target, SCU_CHIPID, &chipid);
+    if (retval != ERROR_OK) {
+      LOG_ERROR("Cannot read tc3xx CHIPID register.");
+      return retval;
+    }
+
+    if ((chipid & SCU_CHIPID_CHTEC) != 0x80) {
+      LOG_ERROR("CHIPID register does not match tc3xx.");
+      return ERROR_FAIL;
+    }
+    /* TODO: Check size  */
   }
 
-  if ((chipid & SCU_CHIPID_CHTEC) != 0x80) {
-    LOG_ERROR("CHIPID register does not match tc3xx.");
-    return ERROR_FAIL;
-  }
-
-  LOG_DEBUG("IDCHIP = %08" PRIx32, chipid);
-
-  /* TODO: Check size / DFLASH / UCB */
-
-  bank->num_sectors = bank->size / 16 / 1024;
+  bank->minimal_write_gap = 0;
+  bank->write_start_alignment = bank->write_end_alignment =
+      tc3xx_bank->page_size;
+  bank->num_sectors = bank->size / tc3xx_bank->sector_size;
   bank->sectors = calloc(bank->num_sectors, sizeof(struct flash_sector));
   for (unsigned int i = 0; i < bank->num_sectors; i++) {
-    bank->sectors[i].size = 0x4000;
+    bank->sectors[i].size = tc3xx_bank->sector_size;
     bank->sectors[i].offset = flash_addr - bank->base;
-    flash_addr += 0x4000;
+    flash_addr += tc3xx_bank->sector_size;
     /* TOOD: Check erased */
     bank->sectors[i].is_erased = -1;
     /* TODO: Check UCB for protection*/
@@ -77,55 +115,76 @@ int tc3xx_erase(struct flash_bank *bank, unsigned int first,
                 unsigned int last) {
 
   struct aurix_ocds *ocds = target_to_aurix(bank->target)->ocds;
-  int err;
+  struct tc3xx_flash_bank *tc3xx_bank = bank->driver_priv;
+  int ret;
+
+  if (bank->target->state != TARGET_HALTED) {
+    LOG_ERROR("Target not halted");
+    return ERROR_TARGET_NOT_HALTED;
+  }
 
   while (first <= last) {
-    uint32_t addr = bank->base + bank->sectors[first].offset;
-    /* Align sector count to physical sector boundary (64 sectors) */
-    uint32_t sector_count = MIN(last - first + 1, 64 - (first % 64));
+    /* Align sector count to physical sector boundary */
+    uint32_t sector_count =
+        MIN(last - first + 1,
+            tc3xx_bank->phys_sector_size -
+                (first % (bank->size / tc3xx_bank->phys_sector_size)));
+    /* Put address always in segment 0xA */
+    uint32_t addr =
+        (~0xF0000000 & (bank->base + bank->sectors[first].offset)) + 0xA0000000;
+
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAA50,
+                                         addr);
+    if (ret) {
+      goto err;
+    }
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAA58,
+                                         sector_count);
+    if (ret) {
+      goto err;
+    }
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAAA8,
+                                         0x80);
+    if (ret) {
+      goto err;
+    }
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAAA8,
+                                         0x50);
+    if (ret) {
+      goto err;
+    }
+    ret = aurix_ocds_run(ocds);
+    if (ret) {
+      goto err;
+    }
     first += sector_count;
-
-    err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AA50, addr);
-    if (err) {
-      goto err;
-    }
-    err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AA58, sector_count);
-    if (err) {
-      goto err;
-    }
-    err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AAA8, 0x80);
-    if (err) {
-      goto err;
-    }
-    err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AAA8, 0x50);
-    if (err) {
-      goto err;
-    }
-
-    err = aurix_ocds_run(ocds);
-    if (err) {
-      goto err;
-    }
 
     uint32_t flash_err = 0;
     uint32_t flash_busy = 0xFFFFFFFF;
-    while (flash_err == 0 && (flash_busy & (1 << (0 + 2)))) {
-      err = aurix_ocds_queue_soc_read_u32(ocds, 0xF8040034, &flash_err);
-      if (err) {
+    while (flash_err == 0 && (flash_busy & (1 << tc3xx_bank->busy_bit))) {
+      ret = aurix_ocds_queue_soc_read_u32(
+          ocds, tc3xx_bank->reg_addr + tc3xx_bank->err_offset, &flash_err);
+      if (ret) {
         goto err;
       }
-      err = aurix_ocds_queue_soc_read_u32(ocds, 0xF8040010, &flash_busy);
-      if (err) {
+      ret = aurix_ocds_queue_soc_read_u32(
+          ocds, tc3xx_bank->reg_addr + tc3xx_bank->sts_offset, &flash_busy);
+      if (ret) {
         goto err;
       }
-      err = aurix_ocds_run(ocds);
-      if (err) {
+      ret = aurix_ocds_run(ocds);
+      if (ret) {
         goto err;
       }
     }
 
     if (flash_err) {
       LOG_ERROR("Flash operation failed: %x", flash_err);
+      ret = aurix_ocds_atomic_write_u32(ocds, tc3xx_bank->cmd_addr + 0x5554,
+                                        0xF0);
+      if (ret) {
+        LOG_ERROR("Failed to execute reset to read");
+      }
       return ERROR_FLASH_OPERATION_FAILED;
     }
   }
@@ -140,129 +199,123 @@ err:
 static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
                        uint32_t offset, uint32_t count) {
   struct aurix_ocds *ocds = target_to_aurix(bank->target)->ocds;
-  int err;
+  struct tc3xx_flash_bank *tc3xx_bank = bank->driver_priv;
   uint32_t page_offset = 0;
+  int ret;
 
-  if (offset & 0x1F) {
+  if (bank->target->state != TARGET_HALTED) {
+    LOG_ERROR("Target not halted");
+    return ERROR_TARGET_NOT_HALTED;
+  }
+
+  if (offset & ~(tc3xx_bank->page_size - 1) ||
+      count % tc3xx_bank->page_size != 0) {
     return ERROR_FLASH_DST_BREAKS_ALIGNMENT;
   }
 
-
   while (page_offset < count) {
+    const bool burst_mode = count - page_offset >= tc3xx_bank->burst_size;
+    const uint32_t copy_size =
+        burst_mode ? tc3xx_bank->burst_size : tc3xx_bank->page_size;
+    uint32_t i;
+
     /* Enter page mode*/
-    err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF005554, 0x50);
-    if (err) {
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0x5554,
+                                         0x50);
+    if (ret) {
       goto err;
     }
-    
-    /* Check for burst sequence*/
-    if (count - page_offset >= 256) {
-      uint32_t i;
-      for (i = 0; i < 256; i += 4) {
-        uint32_t data;
-        memcpy(&data, buffer + page_offset + i, 4);
-        err = aurix_ocds_queue_soc_write_u32(
-            ocds, 0xAF0055F0 + ((i % 8) == 0 ? 0 : 4), data);
-        if (err) {
+
+    if (target_to_aurix(bank->target)->family == AURIX_DF_TC3X) {
+      for (i = 0; i < copy_size && page_offset + i < count; i += 8) {
+        uint64_t data;
+        memcpy(&data, buffer + page_offset + i, 8);
+        ret = aurix_ocds_queue_soc_write_u64(
+            ocds, tc3xx_bank->cmd_addr + 0x55F0, data);
+        if (ret) {
           goto err;
         }
       }
-      /* Executing Write Burst sequnce */
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AA50,
-                                           bank->base + offset + page_offset);
-      if (err) {
-        goto err;
-      }
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AA58, 0);
-      if (err) {
-        goto err;
-      }
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AAA8, 0xA0);
-      if (err) {
-        goto err;
-      }
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AAA8, 0xA6);
-      if (err) {
-        goto err;
-      }
-      page_offset += 256;
     } else {
-      uint32_t i;
-      for (i = 0; i < 32 && page_offset + i + 3 < count; i += 4) {
+      for (i = 0; i < copy_size && page_offset + i < count; i += 4) {
         uint32_t data;
         memcpy(&data, buffer + page_offset + i, 4);
-        err = aurix_ocds_queue_soc_write_u32(
-            ocds, 0xAF0055F0 + ((i % 8) == 0 ? 0 : 4), data);
-        if (err) {
+        ret = aurix_ocds_queue_soc_write_u32(
+            ocds, tc3xx_bank->cmd_addr + 0x55F4, data);
+        if (ret) {
           goto err;
         }
       }
-
-      /* Write unaligned data to page */
-      if ((count - i - page_offset) < 4) {
-        uint32_t data;
-        memcpy(&data, buffer + page_offset + i, count - i - page_offset);
-        err = aurix_ocds_queue_soc_write_u32(
-            ocds, 0xAF0055F0 + ((i % 8) == 0 ? 0 : 4), data);
-        if (err) {
-          goto err;
-        }
-        i += 4;
-      }
-      /* Fill up to page boundary */
-      for (; i < 32; i += 4) {
-        err = aurix_ocds_queue_soc_write_u32(
-            ocds, 0xAF0055F0 + ((i % 8) == 0 ? 0 : 4), 0xFFFFFFFF);
-        if (err) {
-          goto err;
-        }
-      }
-
-      /* Execute page write sequence */
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AA50,
-                                           bank->base + offset + page_offset);
-      if (err) {
-        goto err;
-      }
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AA58, 0);
-      if (err) {
-        goto err;
-      }
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AAA8, 0xA0);
-      if (err) {
-        goto err;
-      }
-      err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF00AAA8, 0xAA);
-      if (err) {
-        goto err;
-      }
-      page_offset += 32;
     }
 
-    err = aurix_ocds_run(ocds);
-    if (err) {
+    /* Put address always in segment 0xA */
+    uint32_t addr =
+        (~0xF0000000 & (bank->base + offset + page_offset)) + 0xA0000000;
+    page_offset += copy_size;
+    /* Execute page write sequence */
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAA50,
+                                         addr);
+    if (ret) {
+      goto err;
+    }
+    ret =
+        aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAA58, 0);
+    if (ret) {
+      goto err;
+    }
+    ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAAA8,
+                                         0xA0);
+    if (ret) {
+      goto err;
+    }
+
+    /* Check for burst sequence*/
+    if (burst_mode) {
+      ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAAA8,
+                                           0xA6);
+      if (ret) {
+        goto err;
+      }
+      page_offset += tc3xx_bank->burst_size;
+    } else {
+      ret = aurix_ocds_queue_soc_write_u32(ocds, tc3xx_bank->cmd_addr + 0xAAA8,
+                                           0xAA);
+      if (ret) {
+        goto err;
+      }
+    }
+
+    ret = aurix_ocds_run(ocds);
+    if (ret) {
       goto err;
     }
 
     uint32_t flash_err = 0;
     uint32_t flash_busy = 0xFFFFFFFF;
-    while (flash_err == 0 && (flash_busy & (1 << (0 + 2)))) {
-      err = aurix_ocds_queue_soc_read_u32(ocds, 0xF8040034, &flash_err);
-      if (err) {
+    while (flash_err == 0 && (flash_busy & (1 << tc3xx_bank->busy_bit))) {
+      ret = aurix_ocds_queue_soc_read_u32(
+          ocds, tc3xx_bank->reg_addr + tc3xx_bank->err_offset, &flash_err);
+      if (ret) {
         goto err;
       }
-      err = aurix_ocds_queue_soc_read_u32(ocds, 0xF8040010, &flash_busy);
-      if (err) {
+      ret = aurix_ocds_queue_soc_read_u32(
+          ocds, tc3xx_bank->reg_addr + tc3xx_bank->sts_offset, &flash_busy);
+      if (ret) {
         goto err;
       }
-      err = aurix_ocds_run(ocds);
-      if (err) {
+      ret = aurix_ocds_run(ocds);
+      if (ret) {
         goto err;
       }
     }
 
     if (flash_err) {
       LOG_ERROR("Flash operation failed: %x", flash_err);
+      ret = aurix_ocds_atomic_write_u32(ocds, tc3xx_bank->cmd_addr + 0x5554,
+                                        0xF0);
+      if (ret) {
+        LOG_ERROR("Failed to execute reset to read");
+      }
       return ERROR_FLASH_OPERATION_FAILED;
     }
   }
@@ -280,12 +333,85 @@ static int tc3xx_read(struct flash_bank *bank, uint8_t *buffer, uint32_t offset,
   return target_read_buffer(bank->target, bank->base + offset, count, buffer);
 }
 
+static void tc3xx_free_driver_priv(struct flash_bank *bank) {
+  free(bank->driver_priv);
+}
+
+static inline bool tc3xx_is_dflash(struct flash_bank *bank) {
+  return (bank->base == 0xAF000000 || bank->base == 0xAFC00000);
+}
+
+static inline bool tc3xx_is_ucb(struct flash_bank *bank) {
+  return (bank->base == 0xAF400000);
+}
+
+static inline bool tc4xx_is_dflash(struct flash_bank *bank) {
+  return (bank->base == 0xAE000000 || bank->base == 0xAE800000);
+}
+
+static inline bool tc4xx_is_ucb(struct flash_bank *bank) {
+  /* Check for dflash0 eeprom+ucb and dflash1 eeprom+ucb */
+  return (bank->base == 0xAE400000 || bank->base == 0xAEC00000);
+}
+
 FLASH_BANK_COMMAND_HANDLER(tc3xx_flash_bank_command) {
+  struct aurix_core *aurix = target_to_aurix(bank->target);
   struct tc3xx_flash_bank *tc3xx_bank;
 
   tc3xx_bank = malloc(sizeof(struct tc3xx_flash_bank));
   if (!tc3xx_bank)
     return ERROR_FLASH_OPERATION_FAILED;
+
+  if (aurix->family == AURIX_DF_TC4X) {
+    bool use_cs_pfls = false;
+    /* Select the command sequence interface based on bank addresses */
+    if (bank->base == 0x84000000 || bank->base == 0xAE800000 ||
+        bank->base == 0xAEC00000 ||
+        (use_cs_pfls &&
+         !(bank->base == 0xAE000000 || bank->base == 0xAE400000))) {
+      tc3xx_bank->cmd_addr = 0xF80C0000;
+      tc3xx_bank->sts_offset = 0x84;
+      tc3xx_bank->err_offset = 0x90;
+    } else {
+      tc3xx_bank->cmd_addr = 0xF8080000;
+      tc3xx_bank->sts_offset = 0x4;
+      tc3xx_bank->err_offset = 0x10;
+    }
+    tc3xx_bank->reg_addr = 0xF8040000;
+    tc3xx_bank->busy_bit = bank->base < 0xAE000000   ? bank->bank_number
+                           : bank->base < 0xAE800000 ? 16
+                                                     : 17;
+    tc3xx_bank->page_size =
+        tc4xx_is_dflash(bank) || tc4xx_is_dflash(bank) ? 8 : 32;
+    tc3xx_bank->burst_size =
+        tc4xx_is_dflash(bank) || tc4xx_is_dflash(bank) ? 32 : 512;
+    tc3xx_bank->sector_size = tc4xx_is_ucb(bank)      ? 512
+                              : tc4xx_is_dflash(bank) ? 0x800
+                                                      : 0x4000;
+    tc3xx_bank->phys_sector_size = tc4xx_is_ucb(bank)      ? 512
+                                   : tc4xx_is_dflash(bank) ? 0x20000
+                                                           : 0x100000;
+  } else {
+    /* cmd_reg and offsets might be changed during probe, if HSM sequencer is
+     * required */
+    tc3xx_bank->cmd_addr = 0xAF000000;
+    tc3xx_bank->reg_addr = 0xF8040000;
+    tc3xx_bank->sts_offset = 0x10;
+    tc3xx_bank->err_offset = 0x34;
+    tc3xx_bank->busy_bit = bank->base < 0xAF000000   ? bank->bank_number + 2
+                           : bank->base < 0xAFC00000 ? 0
+                                                     : 1;
+    tc3xx_bank->page_size =
+        tc3xx_is_dflash(bank) || tc3xx_is_ucb(bank) ? 8 : 32;
+    tc3xx_bank->burst_size =
+        tc3xx_is_dflash(bank) || tc3xx_is_ucb(bank) ? 32 : 256;
+    tc3xx_bank->sector_size = tc3xx_is_ucb(bank)      ? 512
+                              : tc3xx_is_dflash(bank) ? 0x1000
+                                                      : 0x4000;
+    tc3xx_bank->phys_sector_size = tc3xx_is_ucb(bank)      ? 512
+                                   : tc3xx_is_dflash(bank) ? bank->size
+                                                           : 0x100000;
+  }
 
   tc3xx_bank->probed = false;
 
@@ -302,4 +428,5 @@ const struct flash_driver tc3xx_flash = {
     .erase = tc3xx_erase,
     .write = tc3xx_write,
     .read = tc3xx_read,
+    .free_driver_priv = tc3xx_free_driver_priv,
 };
