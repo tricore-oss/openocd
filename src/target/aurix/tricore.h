@@ -50,6 +50,9 @@ struct tricore {
   int (*read_reg_u32)(struct target *target, uint16_t addr, uint32_t *value);
   int (*write_reg_u32)(struct target *target, uint16_t addr, uint32_t value);
 
+  uint8_t active_vm;
+
+  bool has_virt;
   bool has_dcache;
   bool has_icache;
 
@@ -78,12 +81,14 @@ struct tricore {
 #define TRICORE_DBGSR_EVTMN 0x70000
 #define TRICORE_CORE_ID 0xFE1C
 #define TRICORE_CORE_ID_CORE_ID 0x3
+#define TRICORE_CORE_ID_VMN 0x300
 #define TRICORE_BOOTCON 0xFE60
 #define TRICORE_BOOTCON_BHALT 0x1
 #define TRICORE_TCCON 0xFE6C
 #define TRICORE_TCCON_SP_FPU 0x1
 #define TRICORE_TCCON_DP_FPU 0x2
 #define TRICORE_TCCON_OVERLAY 0x4
+#define TRICORE_TCCON_VIRT 0x8
 
 static inline struct tricore *target_to_tricore(struct target *target) {
   return (struct tricore *)target->arch_info;
@@ -100,6 +105,8 @@ struct tricore_reg {
   struct target *target;
   uint16_t addr;
   uint8_t value[4];
+  bool per_hr;
+  bool per_vm;
 };
 int tricore_build_reg_cache(struct target *target,
                             const struct reg_arch_type *type);

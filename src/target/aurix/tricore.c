@@ -27,6 +27,7 @@ int tricore_examine(struct target *target) {
   tricore->fpu = (tccon & TRICORE_TCCON_DP_FPU)   ? TRICORE_FPU_DOUBLE
                  : (tccon & TRICORE_TCCON_SP_FPU) ? TRICORE_FPU_SINGLE
                                                   : TRICORE_FPU_NONE;
+  tricore->has_virt = (tccon & TRICORE_TCCON_VIRT) != 0;
 
   return 0;
 }
@@ -51,6 +52,13 @@ int tricore_poll(struct target *target) {
   ret = tricore->read_reg_u32(target, TRICORE_DBGSR, &dbgsr);
   if (ret) {
     return ret;
+  }
+  if (tricore->has_virt) {
+    ret = tricore->read_reg_u32(target, TRICORE_CORE_ID, &core_id);
+    if (ret) {
+      return ret;
+    }
+    tricore->active_vm = FIELD_GET(TRICORE_CORE_ID_VMN, core_id);
   }
   target->state = (dbgsr & TRICORE_DBGSR_HALT) ? TARGET_HALTED : TARGET_RUNNING;
 
@@ -245,48 +253,48 @@ static const struct {
   bool caller_saved;
   bool per_hr;
 } tricore_core_regs[] = {
-    {.name = "d0", .addr = 0xFF00, .caller_saved = true},
-    {.name = "d1", .addr = 0xFF04, .caller_saved = true},
-    {.name = "d2", .addr = 0xFF08, .caller_saved = true},
-    {.name = "d3", .addr = 0xFF0C, .caller_saved = true},
-    {.name = "d4", .addr = 0xFF10, .caller_saved = true},
-    {.name = "d5", .addr = 0xFF14, .caller_saved = true},
-    {.name = "d6", .addr = 0xFF18, .caller_saved = true},
-    {.name = "d7", .addr = 0xFF1C, .caller_saved = true},
-    {.name = "d8", .addr = 0xFF20},
-    {.name = "d9", .addr = 0xFF24},
-    {.name = "d10", .addr = 0xFF28},
-    {.name = "d11", .addr = 0xFF2C},
-    {.name = "d12", .addr = 0xFF30},
-    {.name = "d13", .addr = 0xFF34},
-    {.name = "d14", .addr = 0xFF38},
-    {.name = "d15", .addr = 0xFF3C},
-    {.name = "a0", .addr = 0xFF80, .caller_saved = true},
-    {.name = "a1", .addr = 0xFF84, .caller_saved = true},
-    {.name = "a2", .addr = 0xFF88, .caller_saved = true},
-    {.name = "a3", .addr = 0xFF8C, .caller_saved = true},
-    {.name = "a4", .addr = 0xFF90, .caller_saved = true},
-    {.name = "a5", .addr = 0xFF94, .caller_saved = true},
-    {.name = "a6", .addr = 0xFF98, .caller_saved = true},
-    {.name = "a7", .addr = 0xFF9C, .caller_saved = true},
-    {.name = "a8", .addr = 0xFFA0, .caller_saved = true},
-    {.name = "a9", .addr = 0xFFA4, .caller_saved = true},
-    {.name = "a10", .addr = 0xFFA8},
-    {.name = "a11", .addr = 0xFFAC},
-    {.name = "a12", .addr = 0xFFB0},
-    {.name = "a13", .addr = 0xFFB4},
-    {.name = "a14", .addr = 0xFFB8},
-    {.name = "a15", .addr = 0xFFBC},
-    {.name = "lcx", .addr = 0xFE3C},
-    {.name = "fcx", .addr = 0xFE38},
-    {.name = "pcx", .addr = 0xFE00},
-    {.name = "psw", .addr = 0xFE04},
-    {.name = "pc", .addr = 0xFE08},
+    {.name = "d0", .addr = 0xFF00, .caller_saved = true, .per_hr = true},
+    {.name = "d1", .addr = 0xFF04, .caller_saved = true, .per_hr = true},
+    {.name = "d2", .addr = 0xFF08, .caller_saved = true, .per_hr = true},
+    {.name = "d3", .addr = 0xFF0C, .caller_saved = true, .per_hr = true},
+    {.name = "d4", .addr = 0xFF10, .caller_saved = true, .per_hr = true},
+    {.name = "d5", .addr = 0xFF14, .caller_saved = true, .per_hr = true},
+    {.name = "d6", .addr = 0xFF18, .caller_saved = true, .per_hr = true},
+    {.name = "d7", .addr = 0xFF1C, .caller_saved = true, .per_hr = true},
+    {.name = "d8", .addr = 0xFF20, .per_hr = true},
+    {.name = "d9", .addr = 0xFF24, .per_hr = true},
+    {.name = "d10", .addr = 0xFF28, .per_hr = true},
+    {.name = "d11", .addr = 0xFF2C, .per_hr = true},
+    {.name = "d12", .addr = 0xFF30, .per_hr = true},
+    {.name = "d13", .addr = 0xFF34, .per_hr = true},
+    {.name = "d14", .addr = 0xFF38, .per_hr = true},
+    {.name = "d15", .addr = 0xFF3C, .per_hr = true},
+    {.name = "a0", .addr = 0xFF80, .caller_saved = true, .per_hr = true},
+    {.name = "a1", .addr = 0xFF84, .caller_saved = true, .per_hr = true},
+    {.name = "a2", .addr = 0xFF88, .caller_saved = true, .per_hr = true},
+    {.name = "a3", .addr = 0xFF8C, .caller_saved = true, .per_hr = true},
+    {.name = "a4", .addr = 0xFF90, .caller_saved = true, .per_hr = true},
+    {.name = "a5", .addr = 0xFF94, .caller_saved = true, .per_hr = true},
+    {.name = "a6", .addr = 0xFF98, .caller_saved = true, .per_hr = true},
+    {.name = "a7", .addr = 0xFF9C, .caller_saved = true, .per_hr = true},
+    {.name = "a8", .addr = 0xFFA0, .caller_saved = true, .per_hr = true},
+    {.name = "a9", .addr = 0xFFA4, .caller_saved = true, .per_hr = true},
+    {.name = "a10", .addr = 0xFFA8, .per_hr = true},
+    {.name = "a11", .addr = 0xFFAC, .per_hr = true},
+    {.name = "a12", .addr = 0xFFB0, .per_hr = true},
+    {.name = "a13", .addr = 0xFFB4, .per_hr = true},
+    {.name = "a14", .addr = 0xFFB8, .per_hr = true},
+    {.name = "a15", .addr = 0xFFBC, .per_hr = true},
+    {.name = "lcx", .addr = 0xFE3C, .per_hr = true},
+    {.name = "fcx", .addr = 0xFE38, .per_hr = true},
+    {.name = "pcx", .addr = 0xFE00, .per_hr = true},
+    {.name = "psw", .addr = 0xFE04, .per_hr = true},
+    {.name = "pc", .addr = 0xFE08, .per_hr = true},
     {.name = "icr", .addr = 0xFE2C},
-    {.name = "isp", .addr = 0xFE28},
-    {.name = "btv", .addr = 0xFE24},
-    {.name = "biv", .addr = 0xFE20},
-    {.name = "syscon", .addr = 0xFE14},
+    {.name = "isp", .addr = 0xFE28, .per_hr = true},
+    {.name = "btv", .addr = 0xFE24, .per_hr = true},
+    {.name = "biv", .addr = 0xFE20, .per_hr = true},
+    {.name = "syscon", .addr = 0xFE14, .per_hr = true},
     {.name = "pcon0", .addr = 0x920C},
     {.name = "dcon0", .addr = 0x9040},
 };

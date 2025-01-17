@@ -31,7 +31,18 @@ static inline target_addr_t aurix_core_get_reg_addr(struct target *target,
   struct tricore *tricore = target_to_tricore(target);
   struct tricore_reg *tricore_reg = reg->arch_info;
 
-  return target_to_aurix(target)->base + 0x10000 + tricore_reg->addr;
+  if (!tricore->has_virt || !tricore_reg->per_hr) {
+    return target_to_aurix(target)->base + 0x10000 + tricore_reg->addr;
+  }
+
+  switch (tricore->active_vm) {
+  case 0:
+    return target_to_aurix(target)->base + 0x30000 + tricore_reg->addr;
+  case 1:
+    return target_to_aurix(target)->base + 0x10000 + tricore_reg->addr;
+  default:
+    return target_to_aurix(target)->base + 0x20000 + tricore_reg->addr;
+  }
 }
 
 #endif
