@@ -140,7 +140,7 @@ enum aurix_device_type {
 //! \param device_type device type or JTAG ID
 //! \returns pointer to a c-string containing string representation of device
 //! type
-inline const char *aurix_get_device_name_str(uint32_t device_type) {
+static inline const char *aurix_get_device_name_str(uint32_t device_type) {
   switch (device_type & AURIX_DT_VERSION_MASK_OUT) {
 
   case 0:
@@ -215,7 +215,7 @@ inline const char *aurix_get_device_name_str(uint32_t device_type) {
 
 //! \brief Performs a check if device type falls into TC1x family
 //! \returns \c true if yes, otherwise \c false
-inline bool aurix_df_check_if_tc1x(uint32_t device_type) {
+static inline bool aurix_df_check_if_tc1x(uint32_t device_type) {
   switch (device_type & AURIX_DT_VERSION_MASK_OUT) {
   case AURIX_DT_RIDERD:
   case AURIX_DT_TC1766:
@@ -228,7 +228,7 @@ inline bool aurix_df_check_if_tc1x(uint32_t device_type) {
 
 //! \brief Performs a check if device type falls into TC2x family
 //! \returns \c true if yes, otherwise \c false
-inline bool aurix_df_check_if_tc2x(uint32_t device_type) {
+static inline bool aurix_df_check_if_tc2x(uint32_t device_type) {
   switch (device_type & AURIX_DT_VERSION_MASK_OUT) {
   case AURIX_DT_TC21X:
   case AURIX_DT_TC22X:
@@ -244,7 +244,7 @@ inline bool aurix_df_check_if_tc2x(uint32_t device_type) {
 
 //! \brief Performs a check if device type falls into TC3x family
 //! \returns \c true if yes, otherwise \c false
-inline bool aurix_df_check_if_tc3x(uint32_t device_type) {
+static inline bool aurix_df_check_if_tc3x(uint32_t device_type) {
   switch (device_type & AURIX_DT_VERSION_MASK_OUT) {
   case AURIX_DT_TC33X:
   case AURIX_DT_TC33XE:
@@ -264,7 +264,7 @@ inline bool aurix_df_check_if_tc3x(uint32_t device_type) {
 
 //! \brief Performs a check if device type falls into TC4x family
 //! \returns \c true if yes, otherwise \c false
-inline bool aurix_df_check_if_tc4x(uint32_t device_type) {
+static inline bool aurix_df_check_if_tc4x(uint32_t device_type) {
   switch (device_type & AURIX_DT_VERSION_MASK_OUT) {
   case AURIX_DT_TC41X:
   case AURIX_DT_TC42X:
@@ -284,7 +284,7 @@ inline bool aurix_df_check_if_tc4x(uint32_t device_type) {
 
 //! \brief Get device family based on device type
 //! \returns device family identifier
-inline enum aurix_device_family aurix_get_device_family(uint32_t device_type) {
+static inline enum aurix_device_family aurix_get_device_family(uint32_t device_type) {
   if (aurix_df_check_if_tc4x(device_type))
     return AURIX_DF_TC4X;
   if (aurix_df_check_if_tc3x(device_type))
@@ -298,7 +298,7 @@ inline enum aurix_device_family aurix_get_device_family(uint32_t device_type) {
 
 //! \brief Performs a check if device family is an AURIX family
 //! \returns \c true if yes, otherwise \c false
-inline bool
+static inline bool
 aurix_device_family_is_aurix(enum aurix_device_family device_family) {
   return ((device_family == AURIX_DF_TC4X) ||
           (device_family == AURIX_DF_TC3X) || (device_family == AURIX_DF_TC2X));
@@ -306,7 +306,7 @@ aurix_device_family_is_aurix(enum aurix_device_family device_family) {
 
 //! \brief Performs a check if device type falls into an AURIX family
 //! \returns \c true if yes, otherwise \c false
-inline bool aurix_device_type_is_aurix(uint32_t device_type) {
+static inline bool aurix_device_type_is_aurix(uint32_t device_type) {
   return aurix_device_family_is_aurix(aurix_get_device_family(device_type));
 }
 
@@ -314,7 +314,7 @@ inline bool aurix_device_type_is_aurix(uint32_t device_type) {
 //! \param device_family device family
 //! \returns pointer to a c-string containing string representation of device
 //! family
-inline const char *
+static inline const char *
 aurix_get_device_family_str(enum aurix_device_family device_family) {
   switch (device_family) {
   case AURIX_DF_TC4X:
