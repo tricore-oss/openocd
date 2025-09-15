@@ -512,7 +512,7 @@ static int aurix_arch_info_init(struct target *target, struct aurix_core *aurix,
   aurix->type = target->tap->expected_ids[0] & AURIX_DT_VERSION_MASK_OUT;
   switch (aurix->family = aurix_get_device_family(aurix->type)) {
   case AURIX_DF_TC3X:
-    aurix->base = 0xF8800000 + 0x20000 * target->coreid;
+    aurix->base = target->coreid < 5 ? 0xF8800000 + 0x20000 * target->coreid : 0xF88C0000;
     aurix->tricore.version = TRICORE_1_6_2;
     break;
   case AURIX_DF_TC4X:
