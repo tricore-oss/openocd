@@ -18,31 +18,63 @@ int tricore_init(struct target *target) { return 0; }
 int tricore_examine(struct target *target) {
   struct tricore *tricore = target_to_tricore(target);
   int ret;
+  uint32_t cpu_id;
 
-  uint32_t tccon;
-  ret = tricore->read_reg_u32(target, TRICORE_TCCON, &tccon);
+  ret = tricore->read_reg_u32(target, TRICORE_CPU_ID, &cpu_id);
   if (ret) {
     return ret;
   }
-  tricore->fpu = (tccon & TRICORE_TCCON_DP_FPU)   ? TRICORE_FPU_DOUBLE
-                 : (tccon & TRICORE_TCCON_SP_FPU) ? TRICORE_FPU_SINGLE
-                                                  : TRICORE_FPU_NONE;
-  tricore->has_virt = (tccon & TRICORE_TCCON_VIRT) != 0;
+  switch (cpu_id & TRICORE_CPU_ID_MOD_REV) {
+  case 0x30:
+  case 0x31: {
+    tricore->version = TRICORE_1_8;
+    uint32_t tccon;
+    ret = tricore->read_reg_u32(target, TRICORE_TCCON, &tccon);
+    if (ret) {
+      return ret;
+    }
+    tricore->fpu = (tccon & TRICORE_TCCON_DP_FPU)   ? TRICORE_FPU_DOUBLE
+                   : (tccon & TRICORE_TCCON_SP_FPU) ? TRICORE_FPU_SINGLE
+                                                    : TRICORE_FPU_NONE;
+    tricore->has_virt = (tccon & TRICORE_TCCON_VIRT) != 0;
+    break;
+  }
+  case 0x21:
+    tricore->version = TRICORE_1_6_2;
+    tricore->has_virt = false;
+    tricore->fpu = TRICORE_FPU_SINGLE;
+    break;
+  default:
+    return ret;
+  }
 
   return 0;
 }
 
 int tricore_poll(struct target *target) {
   struct tricore *tricore = target_to_tricore(target);
-  uint32_t dbgsr, bootcon, core_id;
+  uint32_t dbgsr, core_id;
   int ret;
+  bool bhalt = false;
 
-  ret = tricore->read_reg_u32(target, TRICORE_BOOTCON, &bootcon);
-  if (ret) {
-    return ret;
+  if (tricore->version == TRICORE_1_8) {
+    uint32_t bootcon;
+    ret = tricore->read_reg_u32(target, TRICORE_BOOTCON, &bootcon);
+    if (ret) {
+      return ret;
+    }
+    bhalt = (bootcon & TRICORE_BOOTCON_BHALT) != 0;
+  } else {
+    uint32_t syscon;
+    ret = tricore->read_reg_u32(target, TRICORE_SYSCON, &syscon);
+    if (ret) {
+      return ret;
+    }
+    bhalt = (syscon & TRICORE_SYSCON_BHALT) != 0;
   }
 
-  if (bootcon & TRICORE_BOOTCON_BHALT) {
+  /* Check for boot halt, which is set after reset */
+  if (bhalt) {
     target->state = TARGET_HALTED;
     target->debug_reason = DBG_REASON_UNDEFINED;
     tricore->active_vm = 1;
