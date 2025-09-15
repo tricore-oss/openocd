@@ -213,6 +213,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
       if (rsp_rd.cmd != req->cmd || rsp_rd.err != TAS_PL0_ERR_NO_ERROR ||
           rsp_rd.wlrd != req->count) {
         client_state.con_queues[ocds->con_id].reqs_count = 0;
+        LOG_ERROR("Failed to read from 0x%x", req->addr);
         return ERROR_FAIL;
       }
       uint32_t size = req->cmd == TAS_PL0_CMD_RD8    ? 1
@@ -231,6 +232,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
       if (rsp_wr.cmd != req->cmd || rsp_wr.err != TAS_PL0_ERR_NO_ERROR ||
           rsp_wr.wlwr != (req->count + 3) / 4) {
         client_state.con_queues[ocds->con_id].reqs_count = 0;
+        LOG_ERROR("Failed to write from 0x%x", req->addr);
         return ERROR_FAIL;
       }
       break;

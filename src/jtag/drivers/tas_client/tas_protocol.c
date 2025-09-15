@@ -43,11 +43,11 @@ int tas_client_connect(int sock) {
 #endif
   rq_server_connect.client_pid = getpid();
 
-  if (send(sock, (const char *)&packet_size, 4, MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)&rq_server_connect,
-           sizeof(tas_pl1rq_server_connect_st), 0) < 0) {
+  char buf[packet_size];
+  memcpy(buf, &packet_size, 4);
+  memcpy(&buf[4], &rq_server_connect, sizeof(rq_server_connect));
+
+  if (send(sock, (const char *)buf, packet_size, 0) < 0) {
     return ERROR_FAIL;
   }
 
@@ -83,11 +83,11 @@ int tas_client_session_start(int sock, const char *device, uint8_t con_id,
   snprintf(rq_session_start.session_name, TAS_NAME_LEN16, "openocd%u", con_id);
   rq_session_start.session_pw[0] = 0;
 
-  if (send(sock, (const char *)&packet_size, 4, MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)&rq_session_start,
-           sizeof(tas_pl1rq_session_start_st), 0) < 0) {
+  char buf[packet_size];
+  memcpy(buf, &packet_size, 4);
+  memcpy(&buf[4], &rq_session_start, sizeof(rq_session_start));
+
+  if (send(sock, (const char *)&buf, packet_size, 0) < 0) {
     return ERROR_FAIL;
   }
 
@@ -126,11 +126,11 @@ int tas_client_device_connect(int sock, tas_dev_con_feat_et dev_con_feat) {
   rq_device_connect.option = dev_con_feat;
   rq_device_connect.reserved1 = 0;
 
-  if (send(sock, (const char *)&packet_size, 4, MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)&rq_device_connect,
-           sizeof(tas_pl1rq_device_connect_st), 0) < 0) {
+  char buf[packet_size];
+  memcpy(buf, &packet_size, 4);
+  memcpy(&buf[4], &rq_device_connect, sizeof(rq_device_connect));
+
+  if (send(sock, (const char *)buf, packet_size, 0) < 0) {
     return ERROR_FAIL;
   }
 
@@ -168,11 +168,11 @@ int tas_client_get_targets(int sock, tas_target_info_st **targets,
   rq_get_targets.wl = 0;
   rq_get_targets.start_index = 0;
 
-  if (send(sock, (const char *)&packet_size, 4, MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)&rq_get_targets,
-           sizeof(tas_pl1rq_get_targets_st), 0) < 0) {
+  char buf[packet_size];
+  memcpy(buf, &packet_size, 4);
+  memcpy(&buf[4], &rq_get_targets, sizeof(rq_get_targets));
+
+  if (send(sock, (const char *)buf, packet_size, 0) < 0) {
     return ERROR_FAIL;
   }
 
@@ -239,17 +239,14 @@ int tas_client_send_pl0(int sock, uint8_t con_id, uint32_t *pl0_buffer,
   tas_pl1rsp_pl0_start_st rsp_start;
   tas_pl1rsp_pl0_end_st rsp_end;
 
-  if (send(sock, (const char *)&packet_size, 4, MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)&rq_start, sizeof(tas_pl1rq_pl0_start_st),
-           MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)pl0_buffer, pl0_len, MSG_MORE) < 0) {
-    return ERROR_FAIL;
-  }
-  if (send(sock, (const char *)&rq_end, sizeof(tas_pl1rq_pl0_end_st), 0) < 0) {
+  char buf[packet_size];
+  memcpy(buf, &packet_size, 4);
+  memcpy(&buf[4], &rq_start, sizeof(tas_pl1rq_pl0_start_st));
+  memcpy(&buf[4 + sizeof(tas_pl1rq_pl0_start_st)], pl0_buffer, pl0_len);
+  memcpy(&buf[4+ sizeof(tas_pl1rq_pl0_start_st) + pl0_len], &rq_end,  sizeof(tas_pl1rq_pl0_end_st));
+
+
+  if (send(sock, (const char *)buf, packet_size, 0) < 0) {
     return ERROR_FAIL;
   }
 
@@ -263,8 +260,8 @@ int tas_client_send_pl0(int sock, uint8_t con_id, uint32_t *pl0_buffer,
   if (rsp_start.cmd != TAS_PL1_CMD_PL0_START ||
       (rsp_start.err != TAS_PL_ERR_NO_ERROR &&
        rsp_start.err != TAS_PL_ERR_PROTOCOL)) {
-    uint8_t buf[packet_size - 4 - sizeof(tas_pl1rsp_pl0_start_st)];
-    recv(sock, (char *)buf, packet_size - 4 - sizeof(tas_pl1rsp_pl0_start_st),
+    uint8_t rx_buf[packet_size - 4 - sizeof(tas_pl1rsp_pl0_start_st)];
+    recv(sock, (char *)rx_buf, packet_size - 4 - sizeof(tas_pl1rsp_pl0_start_st),
          0);
     return ERROR_FAIL;
   }
@@ -278,8 +275,8 @@ int tas_client_send_pl0(int sock, uint8_t con_id, uint32_t *pl0_buffer,
 
   /* Don't overflow pl0 buffer in case of error */
   while (pl0_len) {
-    uint8_t buf[1024];
-    err = recv(sock, (char *)buf, MIN(pl0_len, 1024ul), 0);
+    uint8_t rx_buf[1024];
+    err = recv(sock, (char *)rx_buf, MIN(pl0_len, 1024ul), 0);
     if (err < 0) {
       return ERROR_FAIL;
     };
