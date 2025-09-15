@@ -227,11 +227,11 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
     }
 
     if (target_to_aurix(bank->target)->family == AURIX_DF_TC3X) {
-      for (i = 0; i < copy_size && page_offset + i < count; i += 8) {
-        uint64_t data;
-        memcpy(&data, buffer + page_offset + i, 8);
-        ret = aurix_ocds_queue_soc_write_u64(
-            ocds, tc3xx_bank->cmd_addr + 0x55F0, data);
+      for (i = 0; i < copy_size && page_offset + i < count; i += 4) {
+        uint32_t data;
+        memcpy(&data, buffer + page_offset + i, 4);
+        ret = aurix_ocds_queue_soc_write_u32(
+            ocds, tc3xx_bank->cmd_addr + 0x55F0 + ((i % 8) == 0 ? 0 : 4), data);
         if (ret) {
           goto err;
         }
