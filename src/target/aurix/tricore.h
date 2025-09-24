@@ -28,16 +28,23 @@ struct tricore_event {
   enum tricore_event_comapre compare;
   enum tricore_event_access access;
 
-  union {
-    struct breakpoint *bp;
-    struct watchpoint *wp;
-  };
+  uint32_t address;
+};
+
+enum tricore_debug_counter {
+  TRICORE_DEBUG_COUNTER_NO_CHANGE,
+  TRICORE_DEBUG_COUNTER_START,
+  TRICORE_DEBUG_COUNTER_STOP,
+  TRICORE_DEBUG_COUNTER_TOGGLE,
 };
 
 struct tricore {
   enum tricore_version version;
   enum tricore_fpu fpu;
   struct tricore_event events[8];
+
+  uint32_t base;
+  void *regs;
 
   struct reg *sp;
   struct reg *pcx;
@@ -49,6 +56,14 @@ struct tricore {
 
   int (*read_reg_u32)(struct target *target, uint16_t addr, uint32_t *value);
   int (*write_reg_u32)(struct target *target, uint16_t addr, uint32_t value);
+
+  int (*poll)(struct target *target);
+
+  uint32_t (*get_single_step_event)(struct target *target);
+  uint32_t (*get_step_event)(struct target *target);
+  uint32_t (*get_event)(struct target *target, struct tricore_event *event);
+  uint32_t (*get_sw_event)(struct target *target, bool enable, bool bbm,
+                           enum tricore_debug_counter cnt);
 
   uint8_t active_vm;
 
@@ -96,6 +111,25 @@ struct tricore {
 
 static inline struct tricore *target_to_tricore(struct target *target) {
   return (struct tricore *)target->arch_info;
+}
+
+static inline uint32_t tricore_get_core_reg_addr(struct target *target,
+                                                 uint16_t reg_addr,
+                                                 bool per_hr) {
+  struct tricore *tricore = target_to_tricore(target);
+
+  if (!tricore->has_virt || !per_hr) {
+    return tricore->base + 0x10000 + reg_addr;
+  }
+
+  switch (tricore->active_vm) {
+  case 0:
+    return tricore->base + 0x30000 + reg_addr;
+  case 1:
+    return tricore->base + 0x10000 + reg_addr;
+  default:
+    return tricore->base + 0x20000 + reg_addr;
+  }
 }
 
 int tricore_arch_info_init(struct target *target, struct tricore *tricore);

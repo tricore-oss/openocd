@@ -54,7 +54,7 @@ struct timeval {
 /* gettimeofday() */
 #ifndef HAVE_GETTIMEOFDAY
 
-#ifdef _WIN32
+#ifndef _TIMEZONE_DEFINED
 struct timezone {
 	int tz_minuteswest;
 	int tz_dsttime;
@@ -166,7 +166,7 @@ int win_select(int max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct time
 static inline int write_socket(int handle, const void *buffer, unsigned int count)
 {
 #ifdef _WIN32
-	return send(handle, buffer, count, 0);
+	return send(handle, (const char *)buffer, count, 0);
 #else
 	return write(handle, buffer, count);
 #endif
@@ -175,7 +175,7 @@ static inline int write_socket(int handle, const void *buffer, unsigned int coun
 static inline int read_socket(int handle, void *buffer, unsigned int count)
 {
 #ifdef _WIN32
-	return recv(handle, buffer, count, 0);
+	return recv(handle, (char *)buffer, count, 0);
 #else
 	return read(handle, buffer, count);
 #endif

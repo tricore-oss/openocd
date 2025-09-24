@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -434,7 +433,18 @@ int aurix_blank_check_memory(struct target *target,
  * Upon GDB connection all breakpoints/watchpoints are cleared.
  */
 int aurix_add_breakpoint(struct target *target, struct breakpoint *breakpoint) {
-  return ERROR_FAIL;
+	struct tricore *tricore = target_to_tricore(target);
+
+	if ((breakpoint->type == BKPT_HARD) && (tricore->events_available < 1)) {
+		LOG_INFO("no hardware event available");
+		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+	}
+  	if ((breakpoint->type == BKPT_HARD) && (breakpoint->length > 4) (tricore->events_available < 2)) {
+		LOG_INFO("only one hardware event for range available");
+		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+	}
+
+  return tricore_set_breakpoint(target, breakpoint);
 }
 
 /* remove breakpoint. hw will only be updated if the target
@@ -512,7 +522,8 @@ static int aurix_arch_info_init(struct target *target, struct aurix_core *aurix,
   aurix->type = target->tap->expected_ids[0] & AURIX_DT_VERSION_MASK_OUT;
   switch (aurix->family = aurix_get_device_family(aurix->type)) {
   case AURIX_DF_TC3X:
-    aurix->base = target->coreid < 5 ? 0xF8800000 + 0x20000 * target->coreid : 0xF88C0000;
+    aurix->base =
+        target->coreid < 5 ? 0xF8800000 + 0x20000 * target->coreid : 0xF88C0000;
     aurix->tricore.version = TRICORE_1_6_2;
     break;
   case AURIX_DF_TC4X:

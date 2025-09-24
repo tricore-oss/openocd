@@ -12,12 +12,10 @@
 #include "helper/log.h"
 #include "jtag/drivers/tas_client/tas_pkt.h"
 #include "jtag/jtag.h"
-#include "jtag/tas.h"
 #include "server/server.h"
 #include <jtag/interface.h>
 
 #include "target/aurix/aurix_ocds.h"
-#include "target/target.h"
 #include "tas_protocol.h"
 
 struct tas_client_pl0_req {
@@ -133,7 +131,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
           .cmd = TAS_PL0_CMD_BASE_ADDR32,
           .ba31to16 = req->addr >> 16,
       };
-      memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), &base_addr,
+      memcpy(pl0_buffer + (pl0_size / sizeof(uint32_t)), &base_addr,
              sizeof(tas_pl0rq_base_addr32_st));
       pl0_size += sizeof(tas_pl0rq_base_addr32_st);
       base_address = req->addr & 0xFFFF0000;
@@ -146,7 +144,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
             .cmd = req->cmd,
             .a15to0 = req->addr & 0xFFFF,
         };
-        memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), &read_addr,
+        memcpy(pl0_buffer + (pl0_size / sizeof(uint32_t)), &read_addr,
                sizeof(tas_pl0rq_rd_st));
         pl0_size += sizeof(tas_pl0rq_rd_st);
       } else {
@@ -156,7 +154,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
             .wlrd = req->count,
             .a15to0 = req->addr & 0xFFFF,
         };
-        memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), &read_addr,
+        memcpy(pl0_buffer + (pl0_size / sizeof(uint32_t)), &read_addr,
                sizeof(tas_pl0rq_rdblk_st));
         pl0_size += sizeof(tas_pl0rq_rdblk_st);
       }
@@ -168,7 +166,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
             .a15to0 = req->addr & 0xFFFF,
             .data = req->data,
         };
-        memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), &write_addr,
+        memcpy(pl0_buffer + (pl0_size / sizeof(uint32_t)), &write_addr,
                sizeof(tas_pl0rq_wr_st));
         pl0_size += sizeof(tas_pl0rq_wr_st);
       } else {
@@ -177,10 +175,10 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
             .cmd = req->cmd,
             .a15to0 = req->addr & 0xFFFF,
         };
-        memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), &write_addr,
+        memcpy(pl0_buffer + (pl0_size / sizeof(uint32_t)), &write_addr,
                sizeof(tas_pl0rq_wrblk_st));
         pl0_size += sizeof(tas_pl0rq_wrblk_st);
-        memcpy(pl0_buffer + pl0_size / sizeof(uint32_t), req->buffer,
+        memcpy(pl0_buffer + (pl0_size / sizeof(uint32_t)), req->buffer,
                req->count * sizeof(uint32_t));
         pl0_size += req->count * 4;
       }
@@ -213,7 +211,8 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
       if (rsp_rd.cmd != req->cmd || rsp_rd.err != TAS_PL0_ERR_NO_ERROR ||
           rsp_rd.wlrd != req->count) {
         client_state.con_queues[ocds->con_id].reqs_count = 0;
-        LOG_ERROR("Failed to read from 0x%x", req->addr);
+        LOG_ERROR("Failed to read from 0x%x with code: 0x%x", req->addr,
+                  rsp_rd.err);
         return ERROR_FAIL;
       }
       uint32_t size = req->cmd == TAS_PL0_CMD_RD8    ? 1
@@ -232,7 +231,8 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
       if (rsp_wr.cmd != req->cmd || rsp_wr.err != TAS_PL0_ERR_NO_ERROR ||
           rsp_wr.wlwr != (req->count + 3) / 4) {
         client_state.con_queues[ocds->con_id].reqs_count = 0;
-        LOG_ERROR("Failed to write from 0x%x", req->addr);
+        LOG_ERROR("Failed to write from 0x%x with code: 0x%x", req->addr,
+                  rsp_wr.err);
         return ERROR_FAIL;
       }
       break;
@@ -377,7 +377,7 @@ out:
       con_info.max_pl2rq_pkt_size - 4 - sizeof(tas_pl1rq_pl0_start_st) -
       sizeof(tas_pl1rq_pl0_end_st);
   client_state.con_queues[ocds->con_id].reqs_size =
-      MIN(256, con_info.pl0_max_num_rw);
+      MIN(256, (uint32_t)con_info.pl0_max_num_rw);
   client_state.con_queues[ocds->con_id].reqs =
       malloc(sizeof(struct tas_client_pl0_req) *
              client_state.con_queues[ocds->con_id].reqs_size);
