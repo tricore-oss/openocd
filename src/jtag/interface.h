@@ -353,8 +353,9 @@ struct adapter_driver {
 	/* SWIM APIs */
 	const struct swim_driver *swim_ops;
 
-	/* AURIX OCDS APIs */
-	const struct aurix_ocds_ops *tas_ops;
+	const struct ifxdap_driver *ifxdap_ops;
+	/* OCMTS APIs */
+	const struct ocmts_ops *ocmts_ops;
 };
 
 extern const char * const jtag_only[];

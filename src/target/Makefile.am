@@ -4,7 +4,7 @@
 	%D%/riscv/libriscv.la \
 	%D%/xtensa/libxtensa.la \
 	%D%/espressif/libespressif.la \
-	%D%/aurix/libaurix.la
+	%D%/tricore/libtricore.la
 
 %C%_libtarget_la_CPPFLAGS = $(AM_CPPFLAGS)
 
@@ -243,4 +243,4 @@ include %D%/openrisc/Makefile.am
 include %D%/riscv/Makefile.am
 include %D%/xtensa/Makefile.am
 include %D%/espressif/Makefile.am
-include %D%/aurix/Makefile.am
+include %D%/tricore/Makefile.am

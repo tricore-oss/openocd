@@ -322,7 +322,6 @@ extern struct target_type arm946e_target;
 extern struct target_type arm966e_target;
 extern struct target_type arm9tdmi_target;
 extern struct target_type armv8r_target;
-extern struct target_type aurix_target;
 extern struct target_type avr32_ap7k_target;
 extern struct target_type avr_target;
 extern struct target_type cortexa_target;
@@ -348,6 +347,7 @@ extern struct target_type quark_x10xx_target;
 extern struct target_type riscv_target;
 extern struct target_type stm8_target;
 extern struct target_type testee_target;
+extern struct target_type tricore_target;
 extern struct target_type xscale_target;
 extern struct target_type xtensa_chip_target;
 

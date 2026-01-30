@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -156,14 +155,12 @@ int aurix_resume(struct target *target, int current, target_addr_t address,
     if (ret) {
       return ret;
     }
-    // LOG_TARGET_DEBUG(target, "resumed at 0x%08" PRIx32, resume_pc);
   } else {
     target->state = TARGET_DEBUG_RUNNING;
     ret = target_call_event_callbacks(target, TARGET_EVENT_DEBUG_RESUMED);
     if (ret) {
       return ret;
     }
-    // LOG_DEBUG("target debug resumed at 0x%08" PRIx32, resume_pc);
   }
 
   return ERROR_OK;
@@ -171,6 +168,7 @@ int aurix_resume(struct target *target, int current, target_addr_t address,
 
 int aurix_step(struct target *target, int current, target_addr_t address,
                int handle_breakpoints) {
+  struct tricore *tricore = target_to_tricore(target);
   int ret;
 
   if (target->state != TARGET_HALTED) {
@@ -178,10 +176,17 @@ int aurix_step(struct target *target, int current, target_addr_t address,
     return ERROR_TARGET_NOT_HALTED;
   }
 
-  if (!current) {
-    tricore_event_set_step(target, address);
-  } else {
-    tricore_event_set_single_step(target);
+  if (current == 0) {
+    ret = aurix_reg_set(tricore->pc, (uint8_t *)&address);
+    if (ret) {
+      LOG_TARGET_ERROR(target, "Failed to set PC before continue");
+    }
+  }
+
+  ret = tricore_event_set_step(target, address);
+  if (ret) {
+    LOG_TARGET_ERROR(target, "Failed to set step event");
+    return ret;
   }
 
   ret = target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
@@ -434,7 +439,19 @@ int aurix_blank_check_memory(struct target *target,
  * Upon GDB connection all breakpoints/watchpoints are cleared.
  */
 int aurix_add_breakpoint(struct target *target, struct breakpoint *breakpoint) {
-  return ERROR_FAIL;
+  struct tricore *tricore = target_to_tricore(target);
+
+  if ((breakpoint->type == BKPT_HARD) && (tricore->events_available < 1)) {
+    LOG_INFO("no hardware event available");
+    return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+  }
+  if ((breakpoint->type == BKPT_HARD) &&
+      (breakpoint->length > 4)(tricore->events_available < 2)) {
+    LOG_INFO("only one hardware event for range available");
+    return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+  }
+
+  return tricore_set_breakpoint(target, breakpoint);
 }
 
 /* remove breakpoint. hw will only be updated if the target
@@ -512,7 +529,8 @@ static int aurix_arch_info_init(struct target *target, struct aurix_core *aurix,
   aurix->type = target->tap->expected_ids[0] & AURIX_DT_VERSION_MASK_OUT;
   switch (aurix->family = aurix_get_device_family(aurix->type)) {
   case AURIX_DF_TC3X:
-    aurix->base = target->coreid < 5 ? 0xF8800000 + 0x20000 * target->coreid : 0xF88C0000;
+    aurix->base =
+        target->coreid < 5 ? 0xF8800000 + 0x20000 * target->coreid : 0xF88C0000;
     aurix->tricore.version = TRICORE_1_6_2;
     break;
   case AURIX_DF_TC4X:

@@ -1,10 +1,13 @@
 #include <stdlib.h>
 
+#include <config.h>
 #include <helper/log.h>
 #include <target/breakpoints.h>
 #include <target/register.h>
 #include <target/target.h>
 
+#include "aurix.h"
+#include "aurix_ocds.h"
 #include "tricore.h"
 
 int tricore_arch_info_init(struct target *target, struct tricore *tricore) {
@@ -17,38 +20,8 @@ int tricore_init(struct target *target) { return 0; }
 
 int tricore_examine(struct target *target) {
   struct tricore *tricore = target_to_tricore(target);
-  int ret;
-  uint32_t cpu_id;
 
-  ret = tricore->read_reg_u32(target, TRICORE_CPU_ID, &cpu_id);
-  if (ret) {
-    return ret;
-  }
-  switch (cpu_id & TRICORE_CPU_ID_MOD_REV) {
-  case 0x30:
-  case 0x31: {
-    tricore->version = TRICORE_1_8;
-    uint32_t tccon;
-    ret = tricore->read_reg_u32(target, TRICORE_TCCON, &tccon);
-    if (ret) {
-      return ret;
-    }
-    tricore->fpu = (tccon & TRICORE_TCCON_DP_FPU)   ? TRICORE_FPU_DOUBLE
-                   : (tccon & TRICORE_TCCON_SP_FPU) ? TRICORE_FPU_SINGLE
-                                                    : TRICORE_FPU_NONE;
-    tricore->has_virt = (tccon & TRICORE_TCCON_VIRT) != 0;
-    break;
-  }
-  case 0x21:
-    tricore->version = TRICORE_1_6_2;
-    tricore->has_virt = false;
-    tricore->fpu = TRICORE_FPU_SINGLE;
-    break;
-  default:
-    return ret;
-  }
-
-  return 0;
+  return tricore->examine(target);
 }
 
 int tricore_poll(struct target *target) {
@@ -57,60 +30,33 @@ int tricore_poll(struct target *target) {
   int ret;
   bool bhalt = false;
 
-  if (tricore->version == TRICORE_1_8) {
-    uint32_t bootcon;
-    ret = tricore->read_reg_u32(target, TRICORE_BOOTCON, &bootcon);
-    if (ret) {
-      return ret;
-    }
-    bhalt = (bootcon & TRICORE_BOOTCON_BHALT) != 0;
-  } else {
-    uint32_t syscon;
-    ret = tricore->read_reg_u32(target, TRICORE_SYSCON, &syscon);
-    if (ret) {
-      return ret;
-    }
-    bhalt = (syscon & TRICORE_SYSCON_BHALT) != 0;
+  ret = tricore->poll(target);
+  if (ret) {
+    return ret;
   }
 
   /* Check for boot halt, which is set after reset */
-  if (bhalt) {
+  if (tricore->boot_halt) {
     target->state = TARGET_HALTED;
     target->debug_reason = DBG_REASON_UNDEFINED;
     tricore->active_vm = 1;
     return ERROR_OK;
   }
 
-  ret = tricore->read_reg_u32(target, TRICORE_DBGSR, &dbgsr);
-  if (ret) {
-    return ret;
-  }
-  if (tricore->has_virt) {
-    ret = tricore->read_reg_u32(target, TRICORE_CORE_ID, &core_id);
-    if (ret) {
-      return ret;
-    }
-    tricore->active_vm = FIELD_GET(TRICORE_CORE_ID_VMN, core_id);
-  }
-  target->state = (dbgsr & TRICORE_DBGSR_HALT) ? TARGET_HALTED : TARGET_RUNNING;
+  target->state = tricore->halted ? TARGET_HALTED : TARGET_RUNNING;
 
   if (target->state == TARGET_HALTED) {
     if (tricore->in_single_step) {
       target->debug_reason = DBG_REASON_SINGLESTEP;
     } else {
       target->debug_reason = DBG_REASON_DBGRQ;
-      uint32_t i;
-      for (i = 0; i < 8; i++) {
-        if (FIELD_GET(TRICORE_DBGSR_EVTSRC, dbgsr) == (16 + i) &&
-            tricore->events[i].enable) {
-          target->debug_reason = tricore->events[i].type == TRICORE_EVENT_PC
-                                     ? DBG_REASON_BREAKPOINT
-                                     : DBG_REASON_WATCHPOINT;
-        }
-        if ((i % 2) == 0 && tricore->events[i].enable &&
-            tricore->events[i].compare == TRICORE_EVENT_RANGE) {
-          i++;
-        }
+      if (tricore->current_event_id >= 0 &&
+          tricore->current_event_id < TRICORE_NUM_EVENTS &&
+          tricore->events[tricore->current_event_id].enable) {
+        target->debug_reason =
+            tricore->events[tricore->current_event_id].type == TRICORE_EVENT_PC
+                ? DBG_REASON_BREAKPOINT
+                : DBG_REASON_WATCHPOINT;
       }
     }
   } else {
@@ -136,71 +82,130 @@ int tricore_continue(struct target *target) {
                                 FIELD_PREP(TRICORE_DBGSR_HALT, 2));
 }
 
-static inline int tricore_event_set(struct target *target, uint8_t event_id) {
+static int tricore_event_set(struct target *target, uint8_t event_id) {
   struct tricore *tricore = target_to_tricore(target);
-  struct tricore_event *event = &tricore->events[event_id];
-  uint32_t trxevt;
+  struct aurix_ocds *ocds = target_to_aurix(target)->ocds;
   int ret;
-  trxevt = FIELD_PREP(TRICORE_TRxEVT_EN, event->enable) |
-           FIELD_PREP(TRICORE_TRxEVT_BBM, event->bbm) |
-           FIELD_PREP(TRICORE_TRxEVT_RNG, event->compare) |
-           FIELD_PREP(TRICORE_TRxEVT_TYP, event->type);
+  uint32_t trxevt = tricore->get_event(target, &tricore->events[event_id]);
 
-  if (event->enable) {
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxEVT(event_id), false),
+      0);
+  if (ret) {
+    return ret;
+  }
 
-    if (event->type == TRICORE_EVENT_PC) {
-      ret = tricore->write_reg_u32(target, TRICORE_TRxADR(event_id),
-                                   event->bp->address);
-      if (ret) {
-        return ret;
-      }
-      if (event->bp->length > 4) {
-        ret = tricore->write_reg_u32(target, TRICORE_TRxADR(event_id + 1),
-                                     event->bp->address + event->bp->length);
-        if (ret) {
-          return ret;
-        }
-      }
-    } else {
-      ret = tricore->write_reg_u32(target, TRICORE_TRxADR(event_id),
-                                   event->wp->address);
-      if (ret) {
-        return ret;
-      }
-      if (event->bp->length > 4) {
-        ret = tricore->write_reg_u32(target, TRICORE_TRxADR(event_id + 1),
-                                     event->wp->address + event->wp->length);
-        if (ret) {
-          return ret;
-        }
-      }
+  if (tricore->events[event_id].compare == TRICORE_EVENT_RANGE) {
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds,
+        tricore_get_core_reg_addr(target, TRICORE_TRxEVT(event_id + 1), false),
+        0);
+    if (ret) {
+      return ret;
+    }
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds,
+        tricore_get_core_reg_addr(target, TRICORE_TRxADR(event_id + 1), false),
+        tricore->events[event_id + 1].address);
+    if (ret) {
+      return ret;
     }
   }
 
-  return tricore->write_reg_u32(target, TRICORE_TRxEVT(event_id), trxevt);
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxADR(event_id), false),
+      tricore->events[event_id].address);
+  if (ret) {
+    return ret;
+  }
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxEVT(event_id), false),
+      trxevt);
+  if (ret) {
+    return ret;
+  }
+
+  return aurix_ocds_run(ocds);
 }
 
-static inline int tricore_event_set_breakpoint(struct target *target,
-                                               uint8_t event_id,
-                                               struct breakpoint *bp) {
+int tricore_event_set_breakpoint(struct target *target, struct breakpoint *bp) {
   struct tricore *tricore = target_to_tricore(target);
-  struct tricore_event *event;
-  if (event_id >= 8) {
-    return ERROR_BREAKPOINT_NOT_FOUND;
-  }
-  if (bp->length > 4 && event_id >= 7) {
-    return ERROR_BREAKPOINT_NOT_FOUND;
-  }
+  uint8_t event_id = 0;
 
-  event = &tricore->events[event_id];
-  event->access = 0;
+  for (event_id = 0; event_id <= TRICORE_NUM_EVENTS; event_id++) {
+    if (bp->length > 4 && (event_id % 2 != 0))
+      continue;
+    if (!tricore->events[event_id].enable)
+      break;
+  }
+  if (event_id == TRICORE_NUM_EVENTS) {
+    LOG_INFO("no hardware event available");
+    return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+  }
+  bp->number = event_id;
+
+  struct tricore_event *event = &tricore->events[event_id];
+  event->access = 0; /* Unused for PC*/
   event->type = TRICORE_EVENT_PC;
   event->bbm = true;
   event->compare =
       bp->length > 4 ? TRICORE_EVENT_RANGE : TRICORE_EVENT_EQUALITY;
+  event->address = bp->address;
   event->enable = true;
+  if (bp->length > 4) {
+    event = &tricore->events[event_id++];
+    bp->linked_brp = event_id;
+    event->address = bp->address + bp->length;
+    event->enable = true;
+  }
 
   return tricore_event_set(target, event_id);
+}
+
+static int tricore_event_set_all(struct target *target) {
+  struct tricore *tricore = target_to_tricore(target);
+  struct aurix_ocds *ocds = target_to_aurix(target)->ocds;
+  uint8_t event_id;
+  int ret;
+
+  for (event_id = 0; event_id < 8; event_id++) {
+    uint32_t trxevt = tricore->get_event(target, &tricore->events[event_id]);
+
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds,
+        tricore_get_core_reg_addr(target, TRICORE_TRxEVT(event_id), false),
+        trxevt);
+    if (ret) {
+      return ret;
+    }
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds,
+        tricore_get_core_reg_addr(target, TRICORE_TRxADR(event_id), false),
+        tricore->events[event_id].address);
+    if (ret) {
+      return ret;
+    }
+
+    if (tricore->events[event_id].compare == TRICORE_EVENT_RANGE) {
+      event_id++;
+      ret = aurix_ocds_queue_soc_write_u32(
+          ocds,
+          tricore_get_core_reg_addr(target, TRICORE_TRxEVT(event_id), false),
+          0);
+      if (ret) {
+        return ret;
+      }
+      ret = aurix_ocds_queue_soc_write_u32(
+          ocds,
+          tricore_get_core_reg_addr(target, TRICORE_TRxADR(event_id), false),
+          tricore->events[event_id].address);
+      if (ret) {
+        return ret;
+      }
+    }
+  }
+
+  return aurix_ocds_run(ocds);
 }
 
 int tricore_event_clear_all(struct target *target) {
@@ -208,13 +213,13 @@ int tricore_event_clear_all(struct target *target) {
   uint32_t event_id;
   int ret;
 
-  for (event_id = 0; event_id < 8; event_id++) {
-    memset(&tricore->events[event_id], 0x0, sizeof(struct tricore_event));
-    ret = tricore_event_set(target, event_id);
-    if (ret) {
-      return ret;
-    }
+  memset(tricore->events, 0x0, sizeof(struct tricore_event) * 8);
+
+  ret = tricore_event_set_all(target);
+  if (ret) {
+    return ret;
   }
+  tricore->in_single_step = false;
 
   return 0;
 }
@@ -224,59 +229,107 @@ int tricore_event_restore_all(struct target *target) {
   uint8_t event_id = 0;
   int ret;
 
-  tricore->in_single_step = false;
-
-  for (event_id = 0; event_id < 8; event_id++) {
-    ret = tricore_event_set(target, event_id);
-    if (ret) {
-      return ret;
-    }
-
-    if (tricore->events[event_id].compare == TRICORE_EVENT_RANGE) {
-      event_id++;
-    }
+  ret = tricore_event_set_all(target);
+  if (ret) {
+    return ret;
   }
+  tricore->in_single_step = false;
 
   return ERROR_OK;
 }
 
 int tricore_event_set_step(struct target *target, target_addr_t address) {
   struct tricore *tricore = target_to_tricore(target);
+  struct aurix_ocds *ocds = target_to_aurix(target)->ocds;
+  uint32_t trxevt = tricore->get_step_event(target);
+
   int ret;
-  uint32_t trxevt = FIELD_PREP(TRICORE_TRxEVT_EN, 1) |
-                    FIELD_PREP(TRICORE_TRxEVT_BBM, 1) |
-                    FIELD_PREP(TRICORE_TRxEVT_RNG, TRICORE_EVENT_EQUALITY) |
-                    FIELD_PREP(TRICORE_TRxEVT_TYP, TRICORE_EVENT_PC);
-
-  tricore->in_single_step = true;
-
-  ret = tricore->write_reg_u32(target, TRICORE_TRxADR(0), address);
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxEVT(0), false),
+      trxevt);
+  if (ret) {
+    return ret;
+  }
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxADR(0), false),
+      address);
   if (ret) {
     return ret;
   }
 
-  return tricore->write_reg_u32(target, TRICORE_TRxEVT(0), trxevt);
+  uint8_t i;
+  for (i = 1; i < 8; i++) {
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds, tricore_get_core_reg_addr(target, TRICORE_TRxEVT(i), false), 0);
+    if (ret) {
+      return ret;
+    }
+  }
+  for (i = 1; i < 8; i++) {
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds, tricore_get_core_reg_addr(target, TRICORE_TRxADR(i), false), 0);
+    if (ret) {
+      return ret;
+    }
+  }
+
+  ret = aurix_ocds_run(ocds);
+  if (ret) {
+    return ret;
+  }
+
+  tricore->in_single_step = true;
+
+  return ERROR_OK;
 }
 
 int tricore_event_set_single_step(struct target *target) {
   struct tricore *tricore = target_to_tricore(target);
+  struct aurix_ocds *ocds = target_to_aurix(target)->ocds;
+  uint32_t trxevt = tricore->get_single_step_event(target);
+
   int ret;
-  uint32_t trxevt = FIELD_PREP(TRICORE_TRxEVT_EN, 1) |
-                    FIELD_PREP(TRICORE_TRxEVT_BBM, 0) |
-                    FIELD_PREP(TRICORE_TRxEVT_RNG, TRICORE_EVENT_RANGE) |
-                    FIELD_PREP(TRICORE_TRxEVT_TYP, TRICORE_EVENT_PC);
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxEVT(0), false),
+      trxevt);
+  if (ret) {
+    return ret;
+  }
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxADR(0), false), 0);
+  if (ret) {
+    return ret;
+  }
+  ret = aurix_ocds_queue_soc_write_u32(
+      ocds, tricore_get_core_reg_addr(target, TRICORE_TRxADR(1), false),
+      0xFFFFFFFF);
+  if (ret) {
+    return ret;
+  }
+  uint8_t i;
+  for (i = 1; i < 8; i++) {
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds, tricore_get_core_reg_addr(target, TRICORE_TRxEVT(i), false), 0);
+    if (ret) {
+      return ret;
+    }
+  }
+  for (i = 2; i < 8; i++) {
+    ret = aurix_ocds_queue_soc_write_u32(
+        ocds, tricore_get_core_reg_addr(target, TRICORE_TRxADR(i), false), 0);
+    if (ret) {
+      return ret;
+    }
+  }
+
+  ret = aurix_ocds_run(ocds);
+  if (ret) {
+    return ret;
+  }
 
   tricore->in_single_step = true;
-  ret = tricore->write_reg_u32(target, TRICORE_TRxADR(0), 0);
-  if (ret) {
-    return ret;
-  }
-  ret = tricore->write_reg_u32(target, TRICORE_TRxADR(1), 0xFFFFFFFF);
-  if (ret) {
-    return ret;
-  }
 
-  return tricore->write_reg_u32(target, TRICORE_TRxEVT(0), trxevt);
+  return ERROR_OK;
 }
 
 static const struct {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 /***************************************************************************
  *   Copyright (C) 2005 by Dominic Rath                                    *
@@ -39,16 +39,16 @@
 #endif
 
 #ifdef PKGBLDDATE
-#define OPENOCD_VERSION	\
+#define OPENOCD_VERSION \
 	"Open On-Chip Debugger " VERSION RELSTR " (" PKGBLDDATE ")"
 #else
-#define OPENOCD_VERSION	\
+#define OPENOCD_VERSION \
 	"Open On-Chip Debugger " VERSION RELSTR
 #endif
 
 static const char openocd_startup_tcl[] = {
 #include "startup_tcl.inc"
-0 /* Terminate with zero */
+	0	/* Terminate with zero */
 };
 
 /* Give scripts and TELNET a way to find out what version this is */
@@ -297,10 +297,10 @@ static int openocd_thread(int argc, char *argv[], struct command_context *cmd_ct
 
 	ret = parse_config_file(cmd_ctx);
 	if (ret == ERROR_COMMAND_CLOSE_CONNECTION) {
-		server_quit(); /* gdb server may be initialized by -c init */
+		server_quit();	/* gdb server may be initialized by -c init */
 		return ERROR_OK;
 	} else if (ret != ERROR_OK) {
-		server_quit(); /* gdb server may be initialized by -c init */
+		server_quit();	/* gdb server may be initialized by -c init */
 		return ERROR_FAIL;
 	}
 

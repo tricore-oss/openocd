@@ -1,5 +1,5 @@
 # stuff "git status" should ignore
-
+build/
 # build output
 .libs
 .deps
