@@ -361,6 +361,9 @@ struct adapter_driver {
 
 	/* SWIM APIs */
 	const struct swim_driver *swim_ops;
+
+	/* IFX DAP APIs*/
+	const struct ifxdap_driver *ifxdap_ops;
 };
 
 int adapter_resets(int assert_trst, int assert_srst);
