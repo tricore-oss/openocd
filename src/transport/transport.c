@@ -52,13 +52,14 @@ static const struct {
 	const char *full_name;
 	const char *deprecated_name;
 } transport_names[] = {
-	{ TRANSPORT_JTAG,           "jtag", "jtag",             NULL,             },
-	{ TRANSPORT_SWD,            "swd",  "swd",              NULL,             },
-	{ TRANSPORT_HLA_JTAG,       "jtag", "jtag (hla)",       "hla_jtag",       },
-	{ TRANSPORT_HLA_SWD,        "swd",  "swd (hla)",        "hla_swd",        },
-	{ TRANSPORT_DAPDIRECT_JTAG, "jtag", "jtag (dapdirect)", "dapdirect_jtag", },
-	{ TRANSPORT_DAPDIRECT_SWD,  "swd",  "swd (dapdirect)",  "dapdirect_swd",  },
-	{ TRANSPORT_SWIM,           "swim", "swim",             NULL,             },
+	{ TRANSPORT_JTAG,			"jtag",	"jtag",				NULL,             },
+	{ TRANSPORT_SWD,			"swd",	"swd",				NULL,             },
+	{ TRANSPORT_HLA_JTAG,		"jtag",	"jtag (hla)",		"hla_jtag",       },
+	{ TRANSPORT_HLA_SWD,		"swd",	"swd (hla)",			"hla_swd",        },
+	{ TRANSPORT_DAPDIRECT_JTAG,	"jtag",	"jtag (dapdirect)",	"dapdirect_jtag", },
+	{ TRANSPORT_DAPDIRECT_SWD,	"swd",	"swd (dapdirect)",	"dapdirect_swd",  },
+	{ TRANSPORT_SWIM,			"swim",	"swim",				NULL,             },
+	{TRANSPORT_IFXDAP,			"ifxdap",	"Infineon DAP",		NULL,             },
 };
 
 /** List of transports registered in OpenOCD, alphabetically sorted per name. */
