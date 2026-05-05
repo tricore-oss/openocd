@@ -186,7 +186,8 @@ m4_define([PARALLEL_PORT_ADAPTER],
 	[[[parport], [PC Parallel Port], [PARPORT]]])
 
 m4_define([NETWORK_ADAPTERS],
-	[[[xvc], [Xilinx XVC TCP], [XVC]]])
+	[[[xvc], [Xilinx XVC TCP], [XVC]],
+  [[tas_client], [Infineon TAS Client], [TAS_CLIENT]]])
 
 m4_define([LINUXSPIDEV_ADAPTER],
 	[[[linuxspidev], [Linux spidev driver], [LINUXSPIDEV]]])

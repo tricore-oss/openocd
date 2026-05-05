@@ -181,6 +181,7 @@ dwHighDateTime
 dwLowDateTime
 dwPlatformId
 dwOSVersionInfoSize
+GetUserNameA
 
 # OpenOCD exceptions that should be removed
 KiB
