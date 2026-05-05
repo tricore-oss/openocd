@@ -3,4 +3,5 @@
 noinst_LTLIBRARIES += %D%/libaurix.la
 %C%_libaurix_la_SOURCES = \
 	%D%/ifxdap.c \
-	%D%/ocmts.c
+	%D%/ocmts.c \
+	%D%/tricore.c 
