@@ -216,6 +216,10 @@ endif
 if XVC
 DRIVERFILES += %D%/xvc.c
 endif
+if TAS_CLIENT
+%C%_libocdjtagdrivers_la_LIBADD += %D%/tas_client/libocdtasclient.la
+include %D%/tas_client/Makefile.am
+endif
 
 DRIVERHEADERS = \
 	%D%/bitbang.h \
