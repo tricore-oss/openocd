@@ -108,8 +108,10 @@ static struct target_type *target_types[] = {
 	&riscv_target,
 	&stm8_target,
 	&testee_target,
+	&tricore_target,
 	&xscale_target,
 	&xtensa_chip_target,
+	NULL,
 };
 
 struct target *all_targets;
@@ -5809,6 +5811,11 @@ COMMAND_HANDLER(handle_target_create)
 		if (target->has_dap) {
 			if (!target->dap_configured) {
 				command_print(CMD, "-dap ?name? required when creating target");
+				retval = ERROR_COMMAND_ARGUMENT_INVALID;
+			}
+		} else if (target->has_ocmts) {
+			if (!target->ocmts_configured) {
+				command_print(CMD, "-ocmts ?name? required when creating target");
 				retval = ERROR_COMMAND_ARGUMENT_INVALID;
 			}
 		} else {
