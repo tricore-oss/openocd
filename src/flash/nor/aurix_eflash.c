@@ -445,7 +445,7 @@ err:
 
 static int aurix_eflash_read(struct flash_bank *bank, uint8_t *buffer, uint32_t offset, uint32_t count)
 {
-	return target_read_buffer(bank->target, bank->base + offset, count, buffer);
+	return target_read_buffer(bank->target, ((bank->base + offset) & ~0xF0000000) + 0xA0000000, count, buffer);
 }
 
 static void aurix_free_driver_priv(struct flash_bank *bank)
