@@ -456,7 +456,9 @@ static void aurix_free_driver_priv(struct flash_bank *bank)
 FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 {
 	struct aurix_eflash_bank *tc3x_bank;
-	bool is_pflash = bank->base >= 0x80000000 && bank->base < 0x81000000;
+	uint32_t bank_base = bank->base & 0x0FFFFFFF;
+	bool is_flash_segment = (bank->base & 0xF0000000) == 0x80000000 || (bank->base & 0xF0000000) == 0xA0000000;
+	bool is_pflash = is_flash_segment && bank_base < 0x01000000;
 	bool is_ucb = bank->base == 0xAF400000;
 	bool is_dflash0 = bank->base == 0xAF000000 || bank->base == 0xAF400000;
 	bool is_dflash1 = bank->base == 0xAFC00000;
@@ -529,10 +531,10 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 {
 	struct aurix_eflash_bank *tc4x_bank;
-	bank->base = (bank->base & ~0xF0000000) | 0xA0000000;
-
-	bool is_pflash0 = bank->base >= 0xA0000000 && bank->base < 0xA1800000;
-	bool is_pflash1 = bank->base == 0xA8000000;
+	uint32_t bank_base = bank->base & 0x0FFFFFFF;
+	bool is_flash_segment = (bank->base & 0xF0000000) == 0x80000000 || (bank->base & 0xF0000000) == 0xA0000000;
+	bool is_pflash0 = is_flash_segment && bank_base < 0x01400000;
+	bool is_pflash1 = is_flash_segment && bank_base == 0x04000000;
 	bool is_ucb0 = bank->base == 0xAE400000;
 	bool is_ucb1 = bank->base == 0xAEC00000;
 	bool is_dflash0 = bank->base == 0xAE000000 || bank->base == 0xAE400000;
