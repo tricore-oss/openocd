@@ -543,13 +543,13 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	bool is_ucb = is_ucb0 || is_ucb1;
 
 	if (is_pflash0) {
-		if (bank->size % 0x100000 != 0 || bank->size > 2 * 1024 * 1024) {
+		if (bank->size != 1 * 1024 * 1024 && bank->size != 2 * 1024 * 1024) {
 			LOG_ERROR("Invalid pflash0 bank size. Size should be 1MB or 2MB.");
 			return ERROR_FLASH_BANK_INVALID;
 		}
-		if (bank->base % (2 * 1024 * 1024) != 0) {
+		if (bank->base % (bank->size) != 0) {
 			LOG_ERROR("Invalid pflash0 bank base address. Base should be "
-					  "aligned to 2MB.");
+					  "aligned to bank size.");
 			return ERROR_FLASH_BANK_INVALID;
 		}
 	} else if (is_pflash1) {
