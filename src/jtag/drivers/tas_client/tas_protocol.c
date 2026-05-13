@@ -38,6 +38,16 @@
 	})
 #endif
 
+#define TAS_OUTSTANDING_MAX 8
+
+struct tas_outstanding_pkt {
+	bool in_use;
+	uint16_t pl1_cnt;
+	size_t start_mem_req;
+	size_t end_mem_req;
+	size_t expected_rx_size;
+};
+
 int tas_client_connect(struct tas_client *client, int sock)
 {
 	int err;
@@ -428,102 +438,138 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 								size_t mem_req_num)
 {
 	int err;
-	size_t cur_mem_req = 0, next_mem_req = 0;
 	char tx_buffer[client->max_pl2rq_pkt_size];
 	char rx_buffer[client->max_pl2rsp_pkt_size];
+	size_t send_mem_req = 0;
+	size_t recv_mem_req = 0;
+	struct tas_outstanding_pkt outstanding[TAS_OUTSTANDING_MAX] = {0};
+	size_t outstanding_num = 0;
+	uint8_t con_id = 0;
 
-	while (cur_mem_req < mem_req_num) {
-		size_t tx_offset = 4;
-		size_t rx_size = 4 + sizeof(tas_pl1rsp_pl0_start_st) + sizeof(tas_pl1rsp_pl0_end_st);
-		tas_pl1rq_pl0_start_st rq_start = {
-			.cmd = TAS_PL1_CMD_PL0_START,
-			.wl = 1,
-			.con_id = 0,
-			.pl0_addr_map_mask = (1 << addr_map),
-			.pl1_cnt = pl1_count++,
-			.protoc_ver = PROTOC_VER,
-		};
-		memcpy(tx_buffer + tx_offset, &rq_start, sizeof(rq_start));
-		tx_offset += sizeof(rq_start);
+	while (recv_mem_req < mem_req_num) {
+		while (send_mem_req < mem_req_num && outstanding_num < TAS_OUTSTANDING_MAX) {
+			size_t tx_offset = 4;
+			size_t rx_size = 4 + sizeof(tas_pl1rsp_pl0_start_st) + sizeof(tas_pl1rsp_pl0_end_st);
+			size_t slot = 0;
+			size_t i;
+			uint16_t pl1_cnt = pl1_count++;
 
-		tas_pl0rq_addr_map_st rq_addr_map = {.addr_map = addr_map, .cmd = TAS_PL0_CMD_ADDR_MAP, .wl = 0};
-		memcpy(tx_buffer + tx_offset, &rq_addr_map, sizeof(rq_addr_map));
-		tx_offset += sizeof(rq_addr_map);
-
-		uint32_t base_addr = 0;
-		tas_pl1rq_pl0_end_st rq_end = {
-			.wl = 0,
-			.cmd = TAS_PL1_CMD_PL0_END,
-			.num_pl0_rw = 0,
-		};
-
-		size_t i;
-		for (i = cur_mem_req; i < mem_req_num && rq_end.num_pl0_rw < client->pl0_max_num_rw; i++, rq_end.num_pl0_rw++) {
-			if (mem_reqs[i].length != 1 && mem_reqs[i].length != 2 && mem_reqs[i].length != 4 &&
-				mem_reqs[i].length != 8 && mem_reqs[i].length % 4 != 0 && mem_reqs[i].length > 1024)
-				return ERROR_FAIL;
-			uint32_t words = (mem_reqs[i].length + 3) / 4;
-			if (tx_offset + sizeof(tas_pl0rq_base_addr32_st) +
-						(mem_reqs[i].is_read ? sizeof(tas_pl0rq_rd_st) : sizeof(tas_pl0rq_wrblk_st) + words * 4) >
-					client->max_pl2rq_pkt_size ||
-				rx_size + (mem_reqs[i].is_read ? sizeof(tas_pl0rsp_rd_st) + words * 4 : sizeof(tas_pl0rsp_st)) >
-					client->max_pl2rsp_pkt_size)
-				break;
-
-			if (base_addr != (mem_reqs[i].addr & 0xFFFF0000)) {
-				tas_pl0rq_base_addr32_st rq_base_addr = {
-					.cmd = TAS_PL0_CMD_BASE_ADDR32,
-					.wl = 0,
-					.ba31to16 = (mem_reqs[i].addr >> 16) & 0xFFFF,
-				};
-				memcpy(tx_buffer + tx_offset, &rq_base_addr, sizeof(rq_base_addr));
-				tx_offset += sizeof(rq_base_addr);
-				base_addr = mem_reqs[i].addr & 0xFFFF0000;
-			}
-
-			if (mem_reqs[i].is_read) {
-				tas_pl0rq_rdblk_st pl0rq_read = {
-					.cmd = (mem_reqs[i].length == 1)   ? TAS_PL0_CMD_RD8
-						   : (mem_reqs[i].length == 2) ? TAS_PL0_CMD_RD16
-						   : (mem_reqs[i].length == 4) ? TAS_PL0_CMD_RD32
-						   : (mem_reqs[i].length == 8) ? TAS_PL0_CMD_RD64
-													   : TAS_PL0_CMD_RDBLK,
-					.wl = (mem_reqs[i].length > 8) ? 1 : 0,
-					.a15to0 = mem_reqs[i].addr & 0xFFFF,
-					.wlrd = (mem_reqs[i].length == 1024) ? 0 : words,
-				};
-				if (mem_reqs[i].length > 8) {
-					memcpy(tx_buffer + tx_offset, &pl0rq_read, sizeof(tas_pl0rq_rdblk_st));
-					tx_offset += sizeof(tas_pl0rq_rdblk_st);
-				} else {
-					memcpy(tx_buffer + tx_offset, &pl0rq_read, sizeof(tas_pl0rq_rd_st));
-					tx_offset += sizeof(tas_pl0rq_rd_st);
+			for (i = 0; i < TAS_OUTSTANDING_MAX; i++) {
+				if (!outstanding[i].in_use) {
+					slot = i;
+					break;
 				}
-				rx_size += sizeof(tas_pl0rsp_rd_st) + words * 4;
-			} else {
-				tas_pl0rq_wrblk_st pl0rq_write = {
-					.cmd = (mem_reqs[i].length == 1)   ? TAS_PL0_CMD_WR8
-						   : (mem_reqs[i].length == 2) ? TAS_PL0_CMD_WR16
-						   : (mem_reqs[i].length == 4) ? TAS_PL0_CMD_WR32
-						   : (mem_reqs[i].length == 8) ? TAS_PL0_CMD_WR64
-													   : TAS_PL0_CMD_WRBLK,
-					.wl = (mem_reqs[i].length == 1024) ? 0 : words,
-					.a15to0 = mem_reqs[i].addr & 0xFFFF,
-				};
-				memcpy(tx_buffer + tx_offset, &pl0rq_write, sizeof(pl0rq_write));
-				tx_offset += sizeof(pl0rq_write);
-				memcpy(tx_buffer + tx_offset, mem_reqs[i].buffer, mem_reqs[i].length);
-				tx_offset += words * 4;
-				rx_size += sizeof(tas_pl0rsp_st);
 			}
-		}
-		next_mem_req = i;
-		memcpy(tx_buffer + tx_offset, &rq_end, sizeof(rq_end));
-		tx_offset += sizeof(rq_end);
-		memcpy(tx_buffer, &tx_offset, 4);
+			if (i == TAS_OUTSTANDING_MAX) {
+				alive_sleep(1);
+				break;
+			}
 
-		err = send(client->sock, (const char *)tx_buffer, tx_offset, 0);
-		if (err < 0)
+			tas_pl1rq_pl0_start_st rq_start = {
+				.cmd = TAS_PL1_CMD_PL0_START,
+				.wl = 1,
+				.con_id = con_id,
+				.pl0_addr_map_mask = (1 << addr_map),
+				.pl1_cnt = pl1_cnt,
+				.protoc_ver = PROTOC_VER,
+			};
+			memcpy(tx_buffer + tx_offset, &rq_start, sizeof(rq_start));
+			tx_offset += sizeof(rq_start);
+
+			tas_pl0rq_addr_map_st rq_addr_map = {.addr_map = addr_map, .cmd = TAS_PL0_CMD_ADDR_MAP, .wl = 0};
+			memcpy(tx_buffer + tx_offset, &rq_addr_map, sizeof(rq_addr_map));
+			tx_offset += sizeof(rq_addr_map);
+
+			uint32_t base_addr = 0;
+			tas_pl1rq_pl0_end_st rq_end = {
+				.wl = 0,
+				.cmd = TAS_PL1_CMD_PL0_END,
+				.num_pl0_rw = 0,
+			};
+
+			for (i = send_mem_req; i < mem_req_num && rq_end.num_pl0_rw < client->pl0_max_num_rw;
+				 i++, rq_end.num_pl0_rw++) {
+				if (mem_reqs[i].length != 1 && mem_reqs[i].length != 2 && mem_reqs[i].length != 4 &&
+					mem_reqs[i].length != 8 && mem_reqs[i].length % 4 != 0 && mem_reqs[i].length > 1024)
+					return ERROR_FAIL;
+				uint32_t words = (mem_reqs[i].length + 3) / 4;
+				if (tx_offset + sizeof(tas_pl0rq_base_addr32_st) +
+							(mem_reqs[i].is_read ? sizeof(tas_pl0rq_rd_st) : sizeof(tas_pl0rq_wrblk_st) + words * 4) >
+						client->max_pl2rq_pkt_size ||
+					rx_size + (mem_reqs[i].is_read ? sizeof(tas_pl0rsp_rd_st) + words * 4 : sizeof(tas_pl0rsp_st)) >
+						client->max_pl2rsp_pkt_size)
+					break;
+
+				if (base_addr != (mem_reqs[i].addr & 0xFFFF0000)) {
+					tas_pl0rq_base_addr32_st rq_base_addr = {
+						.cmd = TAS_PL0_CMD_BASE_ADDR32,
+						.wl = 0,
+						.ba31to16 = (mem_reqs[i].addr >> 16) & 0xFFFF,
+					};
+					memcpy(tx_buffer + tx_offset, &rq_base_addr, sizeof(rq_base_addr));
+					tx_offset += sizeof(rq_base_addr);
+					base_addr = mem_reqs[i].addr & 0xFFFF0000;
+				}
+
+				if (mem_reqs[i].is_read) {
+					tas_pl0rq_rdblk_st pl0rq_read = {
+						.cmd = (mem_reqs[i].length == 1)   ? TAS_PL0_CMD_RD8
+							   : (mem_reqs[i].length == 2) ? TAS_PL0_CMD_RD16
+							   : (mem_reqs[i].length == 4) ? TAS_PL0_CMD_RD32
+							   : (mem_reqs[i].length == 8) ? TAS_PL0_CMD_RD64
+														   : TAS_PL0_CMD_RDBLK,
+						.wl = (mem_reqs[i].length > 8) ? 1 : 0,
+						.a15to0 = mem_reqs[i].addr & 0xFFFF,
+						.wlrd = (mem_reqs[i].length == 1024) ? 0 : words,
+					};
+					if (mem_reqs[i].length > 8) {
+						memcpy(tx_buffer + tx_offset, &pl0rq_read, sizeof(tas_pl0rq_rdblk_st));
+						tx_offset += sizeof(tas_pl0rq_rdblk_st);
+					} else {
+						memcpy(tx_buffer + tx_offset, &pl0rq_read, sizeof(tas_pl0rq_rd_st));
+						tx_offset += sizeof(tas_pl0rq_rd_st);
+					}
+					rx_size += sizeof(tas_pl0rsp_rd_st) + words * 4;
+				} else {
+					tas_pl0rq_wrblk_st pl0rq_write = {
+						.cmd = (mem_reqs[i].length == 1)   ? TAS_PL0_CMD_WR8
+							   : (mem_reqs[i].length == 2) ? TAS_PL0_CMD_WR16
+							   : (mem_reqs[i].length == 4) ? TAS_PL0_CMD_WR32
+							   : (mem_reqs[i].length == 8) ? TAS_PL0_CMD_WR64
+														   : TAS_PL0_CMD_WRBLK,
+						.wl = (mem_reqs[i].length == 1024) ? 0 : words,
+						.a15to0 = mem_reqs[i].addr & 0xFFFF,
+					};
+					memcpy(tx_buffer + tx_offset, &pl0rq_write, sizeof(pl0rq_write));
+					tx_offset += sizeof(pl0rq_write);
+					memcpy(tx_buffer + tx_offset, mem_reqs[i].buffer, mem_reqs[i].length);
+					tx_offset += words * 4;
+					rx_size += sizeof(tas_pl0rsp_st);
+				}
+			}
+
+			if (rq_end.num_pl0_rw == 0)
+				return ERROR_FAIL;
+
+			memcpy(tx_buffer + tx_offset, &rq_end, sizeof(rq_end));
+			tx_offset += sizeof(rq_end);
+			memcpy(tx_buffer, &tx_offset, 4);
+
+			err = send(client->sock, (const char *)tx_buffer, tx_offset, 0);
+			if (err < 0)
+				return ERROR_FAIL;
+
+			outstanding[slot].in_use = true;
+			outstanding[slot].pl1_cnt = pl1_cnt;
+			outstanding[slot].start_mem_req = send_mem_req;
+			outstanding[slot].end_mem_req = i;
+			outstanding[slot].expected_rx_size = rx_size;
+			outstanding_num++;
+			send_mem_req = i;
+			con_id++;
+		}
+
+		if (outstanding_num == 0)
 			return ERROR_FAIL;
 
 		uint32_t recv_len;
@@ -537,20 +583,35 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 		err = recv(client->sock, (char *)rx_buffer, recv_len - 4, 0);
 		if (err != (int)recv_len - 4)
 			return ERROR_FAIL;
-		if (recv_len > rx_size) {
-			LOG_DEBUG("Unxpected response size %zu != %d", rx_size, recv_len);
-			return ERROR_FAIL;
-		}
 
 		size_t rx_offset = 0;
 		tas_pl1rsp_pl0_start_st rsp_start;
+		tas_pl1rsp_pl0_end_st rsp_end;
 		memcpy(&rsp_start, rx_buffer + rx_offset, sizeof(rsp_start));
 		rx_offset += sizeof(rsp_start);
+		memcpy(&rsp_end, rx_buffer + recv_len - 4 - sizeof(rsp_end), sizeof(rsp_end));
 
+		size_t slot = TAS_OUTSTANDING_MAX;
+		for (size_t i = 0; i < TAS_OUTSTANDING_MAX; i++) {
+			if (!outstanding[i].in_use)
+				continue;
+			if (outstanding[i].pl1_cnt == rsp_end.pl1_cnt) {
+				slot = i;
+				break;
+			}
+		}
+		if (slot == TAS_OUTSTANDING_MAX)
+			return ERROR_FAIL;
+		if (recv_len > outstanding[slot].expected_rx_size) {
+			LOG_DEBUG("Unxpected response size %zu != %d", outstanding[slot].expected_rx_size, recv_len);
+			return ERROR_FAIL;
+		}
 		if (rsp_start.err != TAS_PL_ERR_NO_ERROR)
 			return ERROR_FAIL;
+		if (rsp_end.pl1_cnt != outstanding[slot].pl1_cnt)
+			return ERROR_FAIL;
 
-		for (i = cur_mem_req; i < next_mem_req; i++) {
+		for (size_t i = outstanding[slot].start_mem_req; i < outstanding[slot].end_mem_req; i++) {
 			tas_pl0rsp_st rsp_pl0;
 			memcpy(&rsp_pl0, rx_buffer + rx_offset, sizeof(rsp_pl0));
 			rx_offset += sizeof(rsp_pl0);
@@ -561,7 +622,10 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 				rx_offset += mem_reqs[i].length;
 			}
 		}
-		cur_mem_req = next_mem_req;
+
+		outstanding[slot].in_use = false;
+		outstanding_num--;
+		recv_mem_req += outstanding[slot].end_mem_req - outstanding[slot].start_mem_req;
 	}
 
 	return ERROR_OK;

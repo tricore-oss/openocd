@@ -77,6 +77,11 @@ static int tas_client_init(void)
 		if (sock == -1)
 			continue;
 
+		/* Set buffer size for outstanding packets */
+		int buffersize = 64*1024;  // 64k
+		setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *) &buffersize, sizeof(buffersize));
+		setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *) &buffersize, sizeof(buffersize));
+
 		err = connect(sock, rp->ai_addr, rp->ai_addrlen);
 		if (err == 0)
 			break;
