@@ -14,17 +14,18 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <flash/common.h>
-#include <flash/nor/core.h>
-#include <flash/nor/driver.h>
-#include <helper/log.h>
-#include <helper/time_support.h>
-#include <helper/types.h>
-#include <jtag/jtag.h>
-#include <target/aurix/aurix_device_family.h>
-#include <target/aurix/ocmts.h>
-#include <target/aurix/tricore.h>
-#include <target/target.h>
+#include "flash/common.h"
+#include "flash/nor/core.h"
+#include "flash/nor/driver.h"
+#include "helper/log.h"
+#include "helper/time_support.h"
+#include "helper/types.h"
+#include "jtag/jtag.h"
+#include "target/algorithm.h"
+#include "target/aurix/aurix_device_family.h"
+#include "target/aurix/ocmts.h"
+#include "target/aurix/tricore.h"
+#include "target/target.h"
 
 struct aurix_eflash_bank {
 	/** Address of the command sequencer */
@@ -53,6 +54,8 @@ struct aurix_eflash_bank {
 	uint8_t page_bit;
 	/** Bank probed */
 	bool probed;
+	/** TC4 eflash */
+	bool tc4x;
 	/** Write timeout in milliseconds */
 	uint64_t write_timeout_ms;
 	/** Erase timeout in milliseconds */
@@ -318,12 +321,18 @@ int aurix_eflash_erase(struct flash_bank *bank, unsigned int first, unsigned int
 		return ret;
 
 	while (first <= last) {
-		/* Align sector count to physical sector boundary */
-		uint32_t sectors_to_boundary =
-			MIN(last - first + 1, aurix_bank->phys_sector_size / aurix_bank->sector_size -
-									  (first % (aurix_bank->phys_sector_size / aurix_bank->sector_size)));
-		/* Limit to logical sector erase count. */
-		uint32_t sector_count = MIN(aurix_bank->num_erase_sectors, MIN(last - first + 1, sectors_to_boundary));
+		uint32_t sector_count;
+		if (aurix_bank->tc4x) {
+			/* Limit to logical sector erase count. */
+			sector_count = MIN(aurix_bank->num_erase_sectors, last - first + 1);
+		} else {
+			/* Align sector count to physical sector boundary */
+			uint32_t sectors_to_boundary =
+				MIN(last - first + 1, aurix_bank->phys_sector_size / aurix_bank->sector_size -
+										  (first % (aurix_bank->phys_sector_size / aurix_bank->sector_size)));
+			/* Limit to logical sector erase count. */
+			sector_count = MIN(aurix_bank->num_erase_sectors, MIN(last - first + 1, sectors_to_boundary));
+		}
 
 		/* Put address always in segment 0xA */
 		uint32_t addr = (~0xF0000000 & (bank->base + bank->sectors[first].offset)) + 0xA0000000;
@@ -359,6 +368,63 @@ sequence_err:
 	return ERROR_OK;
 }
 
+/* Start a low level flash write for the specified region */
+static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, const uint8_t *buffer, uint32_t bytes)
+{
+	struct target *target = bank->target;
+	struct reg_param reg_params[5];
+	uint32_t buffer_size = 0x8000;
+	uint32_t ret;
+	struct working_area *source;
+	static const uint8_t aurix_flash_write_code[] = {
+#include "../../../contrib/loaders/flash/aurix/tc4x-program.inc"
+	};
+
+	ret = target_write_buffer(target, 0x70100000, sizeof(aurix_flash_write_code), aurix_flash_write_code);
+	if (ret != ERROR_OK)
+		return ret;
+
+	/* memory buffer */
+	while (target_alloc_working_area(target, buffer_size, &source) != ERROR_OK) {
+		buffer_size /= 2;
+		buffer_size &= ~3UL; /* Make sure it's 4 byte aligned */
+		if (buffer_size <= 256) {
+
+			LOG_WARNING("No large enough working area available, can't do block "
+						"memory writes");
+			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+		}
+	}
+
+	init_reg_param(&reg_params[0], "a4", 32, PARAM_OUT); /* buffer start */
+	init_reg_param(&reg_params[1], "d4", 32, PARAM_OUT); /* buffer size */
+	init_reg_param(&reg_params[2], "d5", 32, PARAM_OUT); /* addr */
+	init_reg_param(&reg_params[3], "d6", 32, PARAM_OUT); /* size */
+	init_reg_param(&reg_params[4], "d2", 32, PARAM_IN);	 /* return */
+
+	buf_set_u32(reg_params[0].value, 0, 32, (uint32_t)source->address);
+	buf_set_u32(reg_params[1].value, 0, 32, source->size);
+	buf_set_u32(reg_params[2].value, 0, 32, address);
+	buf_set_u32(reg_params[3].value, 0, 32, bytes);
+
+	ret = target_run_flash_async_algorithm(target, buffer, bytes / 8, 8, 0, NULL, ARRAY_SIZE(reg_params), reg_params,
+										   source->address, source->size, 0x70100000, 0, NULL);
+
+	if (ret != ERROR_OK) {
+		uint32_t status = buf_get_u32(reg_params[4].value, 0, 32);
+		LOG_ERROR("Failed to run flash write algorithm on target. Status: 0x%" PRIx32, status);
+	}
+	target_free_working_area(target, source);
+
+	destroy_reg_param(&reg_params[0]);
+	destroy_reg_param(&reg_params[1]);
+	destroy_reg_param(&reg_params[2]);
+	destroy_reg_param(&reg_params[3]);
+	destroy_reg_param(&reg_params[4]);
+
+	return ret;
+}
+
 static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, uint32_t offset, uint32_t count)
 {
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
@@ -377,6 +443,21 @@ static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 	ret = aurix_eflash_check_busy(bank);
 	if (ret)
 		return ret;
+
+	ret = ocmts_io_write_u32(ocmts, aurix_bank->reg_addr + 0xC, 0x200);
+	if (ret)
+		return ret;
+
+	ret = aurix_eflash_write_algo(bank, bank->base + offset, buffer, count);
+	if (ret == ERROR_OK) {
+		return ERROR_OK;
+	} else if (ret != ERROR_TARGET_RESOURCE_NOT_AVAILABLE) {
+		LOG_ERROR("Failed to execute flash write algorithm.");
+		return ret;
+	} else {
+		LOG_WARNING("No enough resources to run flash write algorithm, fallback to "
+					"slow flash write sequence.");
+	}
 
 	while (page_offset < count) {
 		const bool burst_mode = count - page_offset >= aurix_bank->burst_size;
@@ -522,6 +603,7 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 	tc3x_bank->write_timeout_ms = 10;
 	tc3x_bank->erase_timeout_ms = is_ucb ? 200 : is_dflash ? 500 : 400;
 
+	tc3x_bank->tc4x = false;
 	tc3x_bank->probed = false;
 	bank->driver_priv = tc3x_bank;
 
@@ -614,6 +696,7 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	tc4x_bank->write_timeout_ms = 10;
 	tc4x_bank->erase_timeout_ms = is_ucb ? 200 : is_dflash ? 500 : 400;
 
+	tc4x_bank->tc4x = true;
 	tc4x_bank->probed = false;
 	bank->driver_priv = tc4x_bank;
 
