@@ -93,6 +93,10 @@ struct tricore_info {
 	bool virt_enabled;
 	bool suspended;
 	bool halted;
+
+	uint32_t *algorithm_context;
+	unsigned int algorithm_context_regs;
+	enum target_debug_reason algorithm_debug_reason;
 };
 
 struct tricore_reg {

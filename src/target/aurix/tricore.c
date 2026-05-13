@@ -20,6 +20,7 @@
 #include "helper/types.h"
 #include "jtag/interface.h"
 #include "jtag/jtag.h"
+#include "target/algorithm.h"
 #include "target/breakpoints.h"
 #include "target/register.h"
 #include "target/target.h"
@@ -346,6 +347,13 @@ static int tricore_debug_init(struct target *target)
 			LOG_TARGET_ERROR(target, "Failed to clear HARR event");
 			return ret;
 		}
+	}
+
+	/* Set debug instruction event trigger */
+	ret = ocmts_io_write_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_SWEVT), 0x9);
+	if (ret) {
+		LOG_TARGET_ERROR(target, "Failed to set SW event");
+		return ret;
 	}
 
 	return ERROR_OK;
@@ -1198,27 +1206,251 @@ int tricore_hit_watchpoint(struct target *target, struct watchpoint **hit_watchp
 	return ERROR_FAIL;
 }
 
+static int tricore_algorithm_save_context(struct target *target)
+{
+	struct tricore_info *tricore = target_to_tricore(target);
+	unsigned int num_regs = target->reg_cache->num_regs;
+	uint32_t *context;
+
+	if (tricore->algorithm_context_regs != num_regs) {
+		context = realloc(tricore->algorithm_context, num_regs * sizeof(*context));
+		if (!context) {
+			LOG_TARGET_ERROR(target, "Failed to allocate algorithm context");
+			return ERROR_FAIL;
+		}
+
+		tricore->algorithm_context = context;
+		tricore->algorithm_context_regs = num_regs;
+	}
+
+	for (unsigned int i = 0; i < num_regs; i++) {
+		struct reg *reg = &target->reg_cache->reg_list[i];
+
+		if (!reg->exist)
+			continue;
+
+		if (!reg->valid) {
+			int ret = reg->type->get(reg);
+			if (ret != ERROR_OK) {
+				LOG_TARGET_ERROR(target, "Failed to read register %s", reg->name);
+				return ret;
+			}
+		}
+
+		tricore->algorithm_context[i] = buf_get_u32(reg->value, 0, reg->size);
+	}
+
+	tricore->algorithm_debug_reason = target->debug_reason;
+
+	return ERROR_OK;
+}
+
+static int tricore_algorithm_restore_context(struct target *target)
+{
+	struct tricore_info *tricore = target_to_tricore(target);
+	int ret;
+
+	if (!tricore->algorithm_context)
+		return ERROR_OK;
+
+	for (unsigned int i = 0; i < tricore->algorithm_context_regs; i++) {
+		struct reg *reg = &target->reg_cache->reg_list[i];
+
+		if (!reg->exist)
+			continue;
+
+		buf_set_u32(reg->value, 0, reg->size, tricore->algorithm_context[i]);
+		reg->valid = true;
+		reg->dirty = true;
+	}
+
+	ret = tricore_restore_reg_cache(target);
+	if (ret != ERROR_OK)
+		return ret;
+
+	target->debug_reason = tricore->algorithm_debug_reason;
+
+	return ERROR_OK;
+}
+
 /**
  * Target algorithm support.  Do @b not call this method directly,
  * use target_run_algorithm() instead.
  */
-int tricore_run_algorithm(struct target *target, int num_mem_params, struct mem_param *mem_params, int num_reg_params,
-						  struct reg_param *reg_param, target_addr_t entry_point, target_addr_t exit_point,
-						  unsigned int timeout_ms, void *arch_info)
-{
-	return ERROR_FAIL;
-}
 int tricore_start_algorithm(struct target *target, int num_mem_params, struct mem_param *mem_params, int num_reg_params,
 							struct reg_param *reg_param, target_addr_t entry_point, target_addr_t exit_point,
 							void *arch_info)
 {
-	return ERROR_FAIL;
+	struct tricore_info *tricore = target_to_tricore(target);
+	int ret;
+	bool context_saved = false;
+
+	(void)exit_point;
+	(void)arch_info;
+
+	if (target->state != TARGET_HALTED) {
+		LOG_TARGET_ERROR(target, "not halted (start target algo)");
+		return ERROR_TARGET_NOT_HALTED;
+	}
+
+	ret = tricore_algorithm_save_context(target);
+	if (ret != ERROR_OK)
+		return ret;
+	context_saved = true;
+
+	for (int i = 0; i < num_mem_params; i++) {
+		if (mem_params[i].direction == PARAM_IN)
+			continue;
+
+		ret = target_write_buffer(target, mem_params[i].address, mem_params[i].size, mem_params[i].value);
+		if (ret != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to write memory parameter at 0x%" TARGET_PRIxADDR, mem_params[i].address);
+			goto restore_context;
+		}
+	}
+
+	for (int i = 0; i < num_reg_params; i++) {
+		struct reg *reg;
+
+		if (reg_param[i].direction == PARAM_IN)
+			continue;
+
+		reg = register_get_by_name(target->reg_cache, reg_param[i].reg_name, false);
+		if (!reg) {
+			LOG_TARGET_ERROR(target, "BUG: register '%s' not found", reg_param[i].reg_name);
+			ret = ERROR_COMMAND_SYNTAX_ERROR;
+			goto restore_context;
+		}
+
+		if (reg->size != reg_param[i].size) {
+			LOG_TARGET_ERROR(target, "BUG: register '%s' size doesn't match reg_param[i].size", reg_param[i].reg_name);
+			ret = ERROR_COMMAND_SYNTAX_ERROR;
+			goto restore_context;
+		}
+
+		ret = reg->type->set(reg, reg_param[i].value);
+		if (ret != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to set register %s", reg->name);
+			goto restore_context;
+		}
+	}
+
+	ret = tricore_resume(target, false, entry_point, true, true);
+	if (ret == ERROR_OK)
+		return ERROR_OK;
+
+restore_context:
+	if (context_saved)
+		tricore_algorithm_restore_context(target);
+	register_cache_invalidate(target->reg_cache);
+	target->state = TARGET_HALTED;
+	target->debug_reason = tricore->algorithm_debug_reason;
+
+	return ret;
 }
+
 int tricore_wait_algorithm(struct target *target, int num_mem_params, struct mem_param *mem_params, int num_reg_params,
 						   struct reg_param *reg_param, target_addr_t exit_point, unsigned int timeout_ms,
 						   void *arch_info)
 {
-	return ERROR_FAIL;
+	struct tricore_info *tricore = target_to_tricore(target);
+	int ret;
+	int retval = ERROR_OK;
+
+	(void)arch_info;
+
+	ret = target_wait_state(target, TARGET_HALTED, timeout_ms);
+	if (ret != ERROR_OK || target->state != TARGET_HALTED) {
+		ret = target_halt(target);
+		if (ret != ERROR_OK)
+			return ret;
+
+		ret = target_wait_state(target, TARGET_HALTED, 500);
+		if (ret != ERROR_OK)
+			return ret;
+
+		retval = ERROR_TARGET_TIMEOUT;
+	} else if (exit_point) {
+		ret = tricore->pc->type->get(tricore->pc);
+		if (ret != ERROR_OK)
+			return ret;
+
+		uint32_t pc = buf_get_u32(tricore->pc->value, 0, tricore->pc->size);
+		if (pc != exit_point) {
+			LOG_TARGET_DEBUG(target, "failed algorithm halted at 0x%08" PRIx32 ", expected 0x%08" TARGET_PRIxADDR, pc,
+							 exit_point);
+			retval = ERROR_TARGET_ALGO_EXIT;
+		}
+	}
+
+	if (retval == ERROR_OK) {
+		for (int i = 0; i < num_mem_params; i++) {
+			if (mem_params[i].direction == PARAM_OUT)
+				continue;
+
+			ret = target_read_buffer(target, mem_params[i].address, mem_params[i].size, mem_params[i].value);
+			if (ret != ERROR_OK) {
+				LOG_TARGET_ERROR(target, "Failed to read memory parameter at 0x%" TARGET_PRIxADDR,
+								 mem_params[i].address);
+				retval = ret;
+				break;
+			}
+		}
+	}
+
+	if (retval == ERROR_OK) {
+		for (int i = 0; i < num_reg_params; i++) {
+			struct reg *reg;
+
+			if (reg_param[i].direction == PARAM_OUT)
+				continue;
+
+			reg = register_get_by_name(target->reg_cache, reg_param[i].reg_name, false);
+			if (!reg) {
+				LOG_TARGET_ERROR(target, "BUG: register '%s' not found", reg_param[i].reg_name);
+				retval = ERROR_COMMAND_SYNTAX_ERROR;
+				break;
+			}
+
+			if (reg->size != reg_param[i].size) {
+				LOG_TARGET_ERROR(target, "BUG: register '%s' size doesn't match reg_param[i].size",
+								 reg_param[i].reg_name);
+				retval = ERROR_COMMAND_SYNTAX_ERROR;
+				break;
+			}
+
+			ret = reg->type->get(reg);
+			if (ret != ERROR_OK) {
+				retval = ret;
+				break;
+			}
+
+			buf_cpy(reg->value, reg_param[i].value, reg->size);
+		}
+	}
+
+	ret = tricore_algorithm_restore_context(target);
+	if (ret != ERROR_OK)
+		return ret;
+
+	register_cache_invalidate(target->reg_cache);
+
+	return retval;
+}
+
+int tricore_run_algorithm(struct target *target, int num_mem_params, struct mem_param *mem_params, int num_reg_params,
+						  struct reg_param *reg_param, target_addr_t entry_point, target_addr_t exit_point,
+						  unsigned int timeout_ms, void *arch_info)
+{
+	int ret;
+
+	ret = tricore_start_algorithm(target, num_mem_params, mem_params, num_reg_params, reg_param, entry_point,
+								  exit_point, arch_info);
+	if (ret != ERROR_OK)
+		return ret;
+
+	return tricore_wait_algorithm(target, num_mem_params, mem_params, num_reg_params, reg_param, exit_point, timeout_ms,
+								  arch_info);
 }
 
 /* called when target is created */
@@ -1378,6 +1610,7 @@ int tricore_init_target(struct command_context *cmd_ctx, struct target *target)
 void tricore_deinit_target(struct target *target)
 {
 	tricore_free_reg_cache(target);
+	free(target_to_tricore(target)->algorithm_context);
 	free(target_to_tricore(target));
 }
 
