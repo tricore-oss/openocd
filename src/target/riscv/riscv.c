@@ -4231,7 +4231,7 @@ static int riscv_openocd_step_impl(struct target *target, bool current,
 	}
 
 	bool success = true;
-	riscv_reg_t current_mstatus;
+	riscv_reg_t current_mstatus = 0;
 	RISCV_INFO(info);
 
 	if (info->isrmask_mode == RISCV_ISRMASK_STEPONLY) {
