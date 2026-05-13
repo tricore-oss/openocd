@@ -143,6 +143,12 @@ int cfi_target_read_memory(struct flash_bank *bank, target_addr_t addr,
 static void cfi_command(struct flash_bank *bank, uint8_t cmd, uint8_t *cmd_buf)
 {
 	struct cfi_flash_bank *cfi_info = bank->driver_priv;
+	unsigned int bus_width = bank->bus_width;
+	unsigned int chip_width = bank->chip_width;
+
+	/* Keep local command-buffer writes bounded even if bank config is invalid. */
+	if (bus_width > CFI_MAX_BUS_WIDTH)
+		bus_width = CFI_MAX_BUS_WIDTH;
 
 	/* clear whole buffer, to ensure bits that exceed the bus_width
 	 * are set to zero
@@ -151,11 +157,11 @@ static void cfi_command(struct flash_bank *bank, uint8_t cmd, uint8_t *cmd_buf)
 		cmd_buf[i] = 0;
 
 	if (cfi_info->endianness == TARGET_LITTLE_ENDIAN) {
-		for (unsigned int i = bank->bus_width; i > 0; i--)
-			*cmd_buf++ = (i & (bank->chip_width - 1)) ? 0x0 : cmd;
+		for (unsigned int i = bus_width; i > 0; i--)
+			*cmd_buf++ = (i & (chip_width - 1)) ? 0x0 : cmd;
 	} else {
-		for (unsigned int i = 1; i <= bank->bus_width; i++)
-			*cmd_buf++ = (i & (bank->chip_width - 1)) ? 0x0 : cmd;
+		for (unsigned int i = 1; i <= bus_width; i++)
+			*cmd_buf++ = (i & (chip_width - 1)) ? 0x0 : cmd;
 	}
 }
 
