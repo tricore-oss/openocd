@@ -747,16 +747,14 @@ int tricore_read_memory(struct target *target, target_addr_t address, uint32_t s
 			buf_set_u32(buffer, 0, 32, value);
 			return ERROR_OK;
 		}
-		uint32_t current_count = 0;
-		uint32_t current_address = address;
-		while (current_count < count) {
+		while (count) {
 			uint32_t chunk_count = MIN(count, 256);
 			uint32_t chunk_size = chunk_count * size;
-			ret = ocmts_queue_read_block(ocmts, current_address, buffer, chunk_count);
+			ret = ocmts_queue_read_block(ocmts, address, buffer, chunk_count);
 			if (ret)
 				return ret;
-			current_count += chunk_count;
-			current_address += chunk_size;
+			count -= chunk_count;
+			address += chunk_size;
 			buffer += chunk_size;
 		}
 		ret = ocmts_run(ocmts);
