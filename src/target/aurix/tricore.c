@@ -167,6 +167,14 @@ static inline uint32_t tricore_get_reg_addr(struct target *target, uint16_t addr
 {
 	struct tricore_info *tricore = target_to_tricore(target);
 	if (tricore->version == TRICORE_1_8) {
+		if ((addr & 0xFF00) == 0xFE00 && (addr < TRICORE_BIV || addr > TRICORE_LCX) && addr != TRICORE_PPRS) {
+			/* Register are not replicated. Read HRA*/
+			return target->dbgbase + 0x10000 + addr;
+		}
+		if ((addr & 0xFF00) == 0xFD00 || (addr & 0xFF00) == 0xF000) {
+			/* Register are not replicated. Read HRA*/
+			return target->dbgbase + 0x10000 + addr;
+		}
 		if (addr >= TRICORE_VCON0 && addr <= TRICORE_BHV)
 			return target->dbgbase + 0x30000 + addr;
 		if (tricore->has_virt && tricore->virt_enabled) {
