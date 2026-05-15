@@ -86,7 +86,6 @@ struct tricore_info {
 	uint8_t active_vm;
 	enum tricore_event_source active_event;
 
-	bool has_virt;
 	bool has_dcache;
 	bool has_icache;
 

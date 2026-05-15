@@ -388,4 +388,6 @@ static inline int ocmts_run(struct ocmts *ocmts)
 {
 	return ocmts->ops->run(ocmts);
 }
+
+int ocmts_init(struct ocmts *ocmts);
 #endif

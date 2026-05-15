@@ -177,7 +177,7 @@ static inline uint32_t tricore_get_reg_addr(struct target *target, uint16_t addr
 		}
 		if (addr >= TRICORE_VCON0 && addr <= TRICORE_BHV)
 			return target->dbgbase + 0x30000 + addr;
-		if (tricore->has_virt && tricore->virt_enabled) {
+		if (tricore->virt_enabled) {
 			switch (tricore->active_vm) {
 			case 0:
 				return target->dbgbase + 0x30000 + addr;
@@ -308,7 +308,7 @@ static int tricore_debug_entry(struct target *target)
 
 	ret |= ocmts_queue_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_DBGSR), &tricore->dbgsr);
 	ret |= ocmts_queue_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_ICR), &tricore->icr);
-	if (tricore->version == TRICORE_1_8 && tricore->has_virt) {
+	if (tricore->version == TRICORE_1_8 && tricore->virt_enabled) {
 		ret |= ocmts_queue_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_VCON0), &vcon0);
 		ret |= ocmts_queue_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_VCON1), &vcon1);
 	}
@@ -334,31 +334,30 @@ static int tricore_debug_entry(struct target *target)
 	return ERROR_OK;
 }
 
-static int tricore_debug_init(struct target *target)
+static int tricore_init_debug_access(struct target *target)
 {
 	struct tricore_info *tricore = target_to_tricore(target);
 	int ret = 0;
-	uint32_t virt_dbg_en = tricore->has_virt ? 0xFF0000 : 0;
 
-	/* Clear debug status */
-	ret = ocmts_io_write_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_DBGCFG), virt_dbg_en | 0x8003);
-	if (ret) {
-		LOG_TARGET_ERROR(target, "Failed to enable debug");
-		return ret;
-	}
+	if (tricore->version == TRICORE_1_8) {
+		uint32_t tccon;
+		ret = ocmts_io_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_TCCON), &tccon);
+		if (ret)
+			return ret;
+		tricore->virt_enabled = !!(tccon & 0x8);
 
-	memset(tricore->events, 0, sizeof(struct tricore_event) * TRICORE_NUM_EVENTS);
-	/* Clear HARR trigger from FW */
-	if (target->coreid == 0) {
-		ret = tricore_event_set(target, 0);
+		/* Enable core debug */
+		uint32_t virt_dbg_en = tricore->virt_enabled ? 0xFF0000 : 0;
+		ret = ocmts_io_write_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_DBGCFG), virt_dbg_en | 0x8003);
 		if (ret) {
-			LOG_TARGET_ERROR(target, "Failed to clear HARR event");
+			LOG_TARGET_ERROR(target, "Failed to enable debug");
 			return ret;
 		}
 	}
 
 	/* Set debug instruction event trigger */
-	ret = ocmts_io_write_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_SWEVT), 0x9);
+	ret = ocmts_io_write_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_SWEVT),
+							 tricore->version == TRICORE_1_8 ? 0x9 : 0xA);
 	if (ret) {
 		LOG_TARGET_ERROR(target, "Failed to set SW event");
 		return ret;
@@ -408,26 +407,16 @@ static int tricore_poll(struct target *target)
 				LOG_TARGET_ERROR(target, "Failed to read debug status");
 				return ret;
 			}
-			ret = target_call_event_callbacks(target, TARGET_EVENT_HALTED);
-			if (target->reset_halt) {
-				target->reset_halt = false;
-				tricore_event_set(target, 0);
-			}
-		}
 
-		if (prev_target_state == TARGET_DEBUG_RUNNING)
-			ret = target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
-		if (ret)
-			return ret;
-	} else {
-		LOG_TARGET_DEBUG(target, "Target is running");
-		target->state = TARGET_RUNNING;
-		target->debug_reason = DBG_REASON_NOTHALTED;
-		if (prev_target_state != TARGET_RUNNING) {
-			ret = target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
+			if (prev_target_state == TARGET_DEBUG_RUNNING)
+				ret = target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+			else
+				ret = target_call_event_callbacks(target, TARGET_EVENT_HALTED);
 			if (ret)
 				return ret;
 		}
+	} else {
+		target->state = TARGET_RUNNING;
 	}
 
 	return ret;
@@ -647,10 +636,24 @@ int tricore_deassert_reset(struct target *target)
 	/* be certain SRST is off */
 	adapter_deassert_reset();
 
+	if (target->coreid == 0) {
+		ocmts_init(tricore->ocmts);
+		alive_sleep(100);
+		if (target->reset_halt) {
+			/* Clear HAAR event after reset. */
+			ret = ocmts_io_write_block(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_TRXEVT(0)),
+									   (uint32_t[]){0, 0}, 2);
+			if (ret) {
+				LOG_TARGET_ERROR(target, "Failed to clear HAAR event");
+				return ret;
+			}
+		}
+	}
+
 	if (!target_was_examined(target))
 		return ERROR_OK;
 
-	ret = tricore_debug_init(target);
+	ret = tricore_init_debug_access(target);
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -1555,47 +1558,64 @@ err_no_param:
 	return JIM_ERR;
 }
 
-int tricore_examine(struct target *target)
+static int tricore_examine_first(struct target *target)
 {
 	int ret = ERROR_OK;
 	struct tricore_info *tricore = target_to_tricore(target);
-	if (!target_was_examined(target)) {
-		uint32_t CPU_ID;
-		ret = ocmts_io_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_CPU_ID), &CPU_ID);
+	uint32_t CPU_ID;
+
+	ret = ocmts_io_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_CPU_ID), &CPU_ID);
+	if (ret)
+		return ret;
+
+	if ((CPU_ID & 0xFFFF00) != 0xC0C000) {
+		LOG_TARGET_ERROR(target, "Invalid CPU_ID value: 0x%08x", CPU_ID);
+		return ERROR_TARGET_INVALID;
+	}
+	if ((CPU_ID & 0xFF) == 0x31) {
+		uint32_t tccon;
+		LOG_TARGET_INFO(target, "Tricore version 1.8 found");
+		tricore->version = TRICORE_1_8;
+		ret = ocmts_io_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_TCCON), &tccon);
 		if (ret)
 			return ret;
-		if ((CPU_ID & 0xFFFF00) != 0xC0C000) {
-			LOG_TARGET_ERROR(target, "Invalid CPU_ID value: 0x%08x", CPU_ID);
-			return ERROR_TARGET_INVALID;
-		}
-		if ((CPU_ID & 0xFF) == 0x31) {
-			uint32_t ttcon;
-			LOG_TARGET_INFO(target, "Tricore version 1.8 found");
-			tricore->version = TRICORE_1_8;
-			ret = ocmts_io_read_u32(tricore->ocmts, tricore_get_reg_addr(target, TRICORE_TTCON), &ttcon);
-			if (ret)
-				return ret;
-			if (ttcon & 0x1)
-				tricore->fpu = TRICORE_FPU_SINGLE;
-			if (ttcon & 0x2)
-				tricore->fpu = TRICORE_FPU_DOUBLE;
-			if (ttcon & 0x8)
-				tricore->has_virt = true;
-			LOG_TARGET_INFO(target, "Tricore 1.8 features: FPU=%s, Virtualization=%s",
-							(tricore->fpu == TRICORE_FPU_DOUBLE)   ? "double"
-							: (tricore->fpu == TRICORE_FPU_SINGLE) ? "single"
-																   : "none",
-							tricore->has_virt ? "yes" : "no");
-		} else if ((CPU_ID & 0xFF) == 0x21) {
-			tricore->version = TRICORE_1_6_2;
+		if (tccon & 0x1)
 			tricore->fpu = TRICORE_FPU_SINGLE;
-			LOG_TARGET_INFO(target, "Tricore version 1.6.2P found");
-		} else {
-			LOG_TARGET_ERROR(target, "Unknown Tricore version found, CPU_ID: 0x%08x", CPU_ID);
-			return ERROR_TARGET_INVALID;
-		}
-		target_set_examined(target);
+		if (tccon & 0x2)
+			tricore->fpu = TRICORE_FPU_DOUBLE;
+		if (tccon & 0x8)
+			tricore->virt_enabled = true;
+		LOG_TARGET_INFO(target, "Tricore 1.8 features: FPU=%s, Virtualization=%s",
+						(tricore->fpu == TRICORE_FPU_DOUBLE)   ? "double"
+						: (tricore->fpu == TRICORE_FPU_SINGLE) ? "single"
+															   : "none",
+						tricore->virt_enabled ? "yes" : "no");
+	} else if ((CPU_ID & 0xFF) == 0x21) {
+		tricore->version = TRICORE_1_6_2;
+		tricore->fpu = TRICORE_FPU_SINGLE;
+		LOG_TARGET_INFO(target, "Tricore version 1.6.2P found");
+	} else {
+		LOG_TARGET_ERROR(target, "Unknown Tricore version found, CPU_ID: 0x%08x", CPU_ID);
+		return ERROR_TARGET_INVALID;
 	}
+	target_set_examined(target);
+
+	return ERROR_OK;
+}
+
+int tricore_examine(struct target *target)
+{
+	int ret;
+
+	if (!target_was_examined(target)) {
+		ret = tricore_examine_first(target);
+		if (ret)
+			return ret;
+	}
+
+	ret = tricore_init_debug_access(target);
+	if (ret)
+		return ret;
 
 	ret = tricore_poll(target);
 	if (ret)

@@ -123,7 +123,7 @@ err:
 	return retval;
 }
 
-static int ocmts_init(struct ocmts *ocmts)
+int ocmts_init(struct ocmts *ocmts)
 {
 	int err;
 	uint32_t pat0 = 0xA1, pat1 = 0x5E, ostate;
