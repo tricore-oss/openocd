@@ -56,6 +56,8 @@ struct aurix_eflash_bank {
 	bool probed;
 	/** TC4 eflash */
 	bool tc4x;
+	/** DFLASH */
+	bool dflash;
 	/** Fallback mode for flash write */
 	bool fallback_mode;
 	/** Write timeout in milliseconds */
@@ -63,6 +65,11 @@ struct aurix_eflash_bank {
 	/** Erase timeout in milliseconds */
 	uint64_t erase_timeout_ms;
 };
+
+static uint32_t clear_status_key = 0xFA;
+static uint32_t reset_to_read_key = 0xF0;
+static uint32_t page_mode_p_key = 0x50;
+static uint32_t page_mode_d_key = 0x5D;
 
 #define UCB_CHIPID 0xAE400008
 #define UCB_CHIPID_PROD 0x3C000000
@@ -194,7 +201,7 @@ static inline int aurix_eflash_reset_to_read(struct flash_bank *bank)
 	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 
-	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0xF0);
+	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, reset_to_read_key);
 }
 
 static inline int aurix_eflash_clear_status(struct flash_bank *bank)
@@ -202,7 +209,7 @@ static inline int aurix_eflash_clear_status(struct flash_bank *bank)
 	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 
-	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0xFA);
+	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, clear_status_key);
 }
 
 static inline void aurix_eflash_get_error_string(uint32_t flash_err, char *err_str)
@@ -255,8 +262,10 @@ status_err:
 			LOG_ERROR("Failed to read flash operation status");
 			return ERROR_FLASH_OPERATION_FAILED;
 		}
-		if (flash_err)
+		if (flash_err) {
+			timeout_occurred = false;
 			break;
+		}
 		if (tc3x_bank->tc4x) {
 			if (flash_busy & (1 << 31)) {
 				timeout_occurred = false;
@@ -276,7 +285,7 @@ status_err:
 	if (flash_err) {
 		char err_str[256] = {0};
 		aurix_eflash_get_error_string(flash_err, err_str);
-		LOG_ERROR("Flash operation failed with error: %s", err_str);
+		LOG_ERROR("Flash operation failed with error:%s", err_str);
 		if (flash_err & ((1 << 5) | (1 << 8))) {
 			LOG_ERROR("Critical flash error. Please reset device to continue");
 		} else if (flash_err & ((1 << 1) | (1 << 2))) {
@@ -312,14 +321,15 @@ static inline int aurix_eflash_check_busy(struct flash_bank *bank)
 	return ERROR_OK;
 }
 
-static inline int aurix_eflash_enter_page_mode(struct flash_bank *bank)
+static inline int aurix_eflash_enter_page_mode(struct flash_bank *bank, bool dflash)
 {
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
 	uint32_t flash_sts;
 	uint32_t flash_err;
 
-	int ret = ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0x50);
+	uint32_t page_mode_key = dflash ? page_mode_d_key : page_mode_p_key;
+	int ret = ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, page_mode_key);
 	if (ret)
 		goto err;
 	ret = ocmts_queue_read_u32(ocmts, aurix_bank->reg_addr + aurix_bank->err_offset, &flash_err);
@@ -531,7 +541,8 @@ fallback:
 		return ret;
 
 	while (page_offset < count) {
-		const bool burst_mode = count - page_offset >= aurix_bank->burst_size;
+		const bool burst_mode =
+			(page_offset % aurix_bank->burst_size) == 0 && (count - page_offset >= aurix_bank->burst_size);
 		const uint32_t copy_size = burst_mode ? aurix_bank->burst_size : aurix_bank->page_size;
 		uint32_t i;
 
@@ -541,20 +552,20 @@ fallback:
 			return ret;
 		}
 
-		ret = aurix_eflash_enter_page_mode(bank);
+		ret = aurix_eflash_enter_page_mode(bank, aurix_bank->dflash);
 		if (ret) {
 			LOG_ERROR("Flash program failed: failed to enter page mode");
 			return ret;
 		}
 
 		if (aurix_bank->tc4x) {
-			for (i = 0; i < copy_size && page_offset + i < count; i += 4) {
+			for (i = 0; i < copy_size; i += 4) {
 				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0x55F4, (void *)(buffer + page_offset + i));
 				if (ret)
 					goto err;
 			}
 			/* Clear status to reset request done from load page*/
-			ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, &(uint32_t){0xFA});
+			ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, &clear_status_key);
 			if (ret) {
 				ret = aurix_eflash_reset_to_read(bank);
 				if (ret) {
@@ -564,7 +575,7 @@ fallback:
 				return ret;
 			}
 		} else {
-			for (i = 0; i < copy_size && page_offset + i < count; i += 4) {
+			for (i = 0; i < copy_size; i += 4) {
 				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0x55F0 + ((i % 8) == 0 ? 0 : 4),
 											(void *)(buffer + page_offset + i));
 				if (ret)
@@ -698,6 +709,7 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 	tc3x_bank->write_timeout_ms = 10;
 	tc3x_bank->erase_timeout_ms = is_ucb ? 200 : is_dflash ? 500 : 400;
 
+	tc3x_bank->dflash = is_dflash;
 	tc3x_bank->fallback_mode = false;
 	tc3x_bank->tc4x = false;
 	tc3x_bank->probed = false;
@@ -792,6 +804,7 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	tc4x_bank->write_timeout_ms = 10;
 	tc4x_bank->erase_timeout_ms = is_ucb ? 200 : is_dflash ? 500 : 400;
 
+	tc4x_bank->dflash = is_dflash;
 	tc4x_bank->fallback_mode = false;
 	tc4x_bank->tc4x = true;
 	tc4x_bank->probed = false;
