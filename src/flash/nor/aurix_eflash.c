@@ -187,16 +187,46 @@ static int tc4x_eflash_auto_probe(struct flash_bank *bank)
 	return tc4x_eflash_probe(bank);
 }
 
-static inline void aurix_eflash_reset_to_read(struct flash_bank *bank)
+static inline int aurix_eflash_reset_to_read(struct flash_bank *bank)
 {
 	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 
-	int ret = ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0xF0);
-	if (ret) {
-		LOG_ERROR("Failed to execute reset to read. Please reset "
-				  "device to continue");
-	}
+	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0xF0);
+}
+
+static inline int aurix_eflash_clear_status(struct flash_bank *bank)
+{
+	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
+	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
+
+	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0xFA);
+}
+
+static inline void aurix_eflash_get_error_string(uint32_t flash_err, char *err_str)
+{
+	if (flash_err & (1 << 0))
+		strcat(err_str, " SRI bus address error");
+	if (flash_err & (1 << 1))
+		strcat(err_str, " Command sequence error");
+	if (flash_err & (1 << 2))
+		strcat(err_str, " Protection error");
+	if (flash_err & (1 << 4))
+		strcat(err_str, " Abort error");
+	if (flash_err & (1 << 5))
+		strcat(err_str, " Clear error");
+	if (flash_err & (1 << 6))
+		strcat(err_str, " Program verify error");
+	if (flash_err & (1 << 7))
+		strcat(err_str, " Erase verify error");
+	if (flash_err & (1 << 8))
+		strcat(err_str, " Flash operation error");
+	if (flash_err & (1 << 29))
+		strcat(err_str, " No page mode entry");
+	if (flash_err & (1 << 30))
+		strcat(err_str, " Flash operation timeout");
+	if (flash_err & (1 << 31))
+		strcat(err_str, " Flash busy");
 }
 
 static inline int aurix_eflash_handle_error(struct flash_bank *bank, uint32_t sts_bit, int64_t timeout_ms)
@@ -207,6 +237,7 @@ static inline int aurix_eflash_handle_error(struct flash_bank *bank, uint32_t st
 	uint32_t flash_busy = 0xFFFFFFFF;
 	int ret = ERROR_OK;
 	int64_t start_time = timeval_ms();
+	bool timeout_occurred = true;
 
 	while (start_time + timeout_ms > timeval_ms()) {
 		ret = ocmts_queue_read_u32(ocmts, tc3x_bank->reg_addr + tc3x_bank->err_offset, &flash_err);
@@ -220,46 +251,44 @@ static inline int aurix_eflash_handle_error(struct flash_bank *bank, uint32_t st
 status_err:
 		if (ret) {
 			LOG_ERROR("Failed to read flash operation status");
-			aurix_eflash_reset_to_read(bank);
 			return ERROR_FLASH_OPERATION_FAILED;
 		}
-		if (flash_err || !(flash_busy & (1 << sts_bit)))
+		if (flash_err)
 			break;
+		if (tc3x_bank->tc4x) {
+			if (flash_busy & (1 << 31)) {
+				timeout_occurred = false;
+			}
+		} else {
+			if (!(flash_busy & (1 << sts_bit))) {
+				timeout_occurred = false;
+			}
+		}
 		usleep(100);
 	}
 
-	if (flash_busy & (1 << sts_bit)) {
-		LOG_ERROR("Flash operation timed out.");
-		return ERROR_FLASH_BUSY;
+	if (timeout_occurred) {
+		flash_err |= (1 << 30);
 	}
 
 	if (flash_err) {
-		char err_str[256];
-		if (flash_err & (1 << 0))
-			strcat(err_str, " SRI bus address error");
-		if (flash_err & (1 << 1))
-			strcat(err_str, " Command sequence error");
-		if (flash_err & (1 << 2))
-			strcat(err_str, " Protection error");
-		if (flash_err & (1 << 4))
-			strcat(err_str, " Abort error");
-		if (flash_err & (1 << 5))
-			strcat(err_str, " Clear error");
-		if (flash_err & (1 << 6))
-			strcat(err_str, " Program verify error");
-		if (flash_err & (1 << 7))
-			strcat(err_str, " Erase verify error");
-		if (flash_err & (1 << 8))
-			strcat(err_str, " Flash operation error");
+		char err_str[256] = {0};
+		aurix_eflash_get_error_string(flash_err, err_str);
 		LOG_ERROR("Flash operation failed with error: %s", err_str);
-		if (flash_err & ((1 << 5) | (1 << 8)))
+		if (flash_err & ((1 << 5) | (1 << 8))) {
 			LOG_ERROR("Critical flash error. Please reset device to continue");
-		else
-			aurix_eflash_reset_to_read(bank);
-		return ERROR_FLASH_OPERATION_FAILED;
+		} else if (flash_err & ((1 << 1) | (1 << 2))) {
+			ret = aurix_eflash_reset_to_read(bank);
+		} else {
+			ret = aurix_eflash_clear_status(bank);
+		}
+		if (ret) {
+			LOG_ERROR("Failed to clear flash status. Please reset device to continue");
+		}
+		ret = ERROR_FLASH_OPERATION_FAILED;
 	}
 
-	return ERROR_OK;
+	return ret;
 }
 
 static inline int aurix_eflash_check_busy(struct flash_bank *bank)
@@ -286,23 +315,37 @@ static inline int aurix_eflash_enter_page_mode(struct flash_bank *bank)
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
 	uint32_t flash_sts;
+	uint32_t flash_err;
 
 	int ret = ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, 0x50);
-	if (ret) {
-		LOG_ERROR("Failed to enter page mode");
-		return ERROR_FLASH_OPERATION_FAILED;
-	}
-
-	ret = ocmts_io_read_u32(ocmts, aurix_bank->reg_addr + aurix_bank->sts_offset, &flash_sts);
-	if (ret) {
-		LOG_ERROR("Failed to read flash status");
-		return ERROR_FLASH_OPERATION_FAILED;
-	}
+	if (ret)
+		goto err;
+	ret = ocmts_queue_read_u32(ocmts, aurix_bank->reg_addr + aurix_bank->err_offset, &flash_err);
+	if (ret)
+		goto err;
+	ret = ocmts_queue_read_u32(ocmts, aurix_bank->reg_addr + aurix_bank->sts_offset, &flash_sts);
+	if (ret)
+		goto err;
+	ret = ocmts_run(ocmts);
+	if (ret)
+		goto err;
 	if (!(flash_sts & (1 << aurix_bank->page_bit))) {
-		LOG_ERROR("Failed to enter page mode.");
+		flash_err |= (1 << 29);
+	}
+	if (flash_err) {
+		char err_str[256] = {0};
+		aurix_eflash_get_error_string(flash_err, err_str);
+		LOG_ERROR("Failed to enter page mode with error: %s", err_str);
+		ret = aurix_eflash_reset_to_read(bank);
+		if (ret) {
+			LOG_WARNING("Failed to reset flash to read mode. Please reset device to continue");
+		}
 		return ERROR_FLASH_OPERATION_FAILED;
 	}
 	return ERROR_OK;
+err:
+	LOG_ERROR("Failed to execute enter page sequence");
+	return ret;
 }
 
 int aurix_eflash_erase(struct flash_bank *bank, unsigned int first, unsigned int last)
@@ -317,8 +360,16 @@ int aurix_eflash_erase(struct flash_bank *bank, unsigned int first, unsigned int
 	}
 
 	ret = aurix_eflash_check_busy(bank);
-	if (ret)
+	if (ret) {
+		LOG_ERROR("Flash erase failed: flash is busy");
 		return ret;
+	}
+
+	ret = aurix_eflash_clear_status(bank);
+	if (ret) {
+		LOG_ERROR("Flash erase failed: failed to clear flash status");
+		return ret;
+	}
 
 	while (first <= last) {
 		uint32_t sector_count;
@@ -350,19 +401,27 @@ int aurix_eflash_erase(struct flash_bank *bank, unsigned int first, unsigned int
 		if (ret)
 			goto sequence_err;
 		ret = ocmts_run(ocmts);
+		/* Hint: User manual requires Wait for 2*1/fFSI ns (DFlash) or 3*1/fFSI + 8*1/fSRI ns (PFlash)
+		 * The OCMTS delay for the next instruction is sufficient. */
 sequence_err:
 		if (ret) {
-			LOG_ERROR("Failed to execute flash erase sequence address: 0x%08x, "
+			ret = aurix_eflash_reset_to_read(bank);
+			if (ret) {
+				LOG_WARNING("Failed to reset flash to read mode. Please reset device to continue");
+			}
+			LOG_ERROR("Flash erase failed: failed to execute erase sequence address: 0x%08x, "
 					  "sector count: %u",
 					  addr, sector_count);
-			aurix_eflash_reset_to_read(bank);
 			return ERROR_FLASH_OPERATION_FAILED;
 		}
 		first += sector_count;
 
 		ret = aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->erase_timeout_ms);
-		if (ret)
+		if (ret) {
+			LOG_ERROR("Flash erase failed: operation failed at address 0x%08" PRIx64,
+					  bank->base + bank->sectors[first].offset);
 			return ret;
+		}
 	}
 
 	return ERROR_OK;
@@ -419,9 +478,11 @@ static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, co
 	ret = target_run_flash_async_algorithm(target, buffer, bytes / 8, 8, 0, NULL, ARRAY_SIZE(reg_params), reg_params,
 										   source->address, source->size, 0x70100000, 0, NULL);
 
-	if (ret != ERROR_OK) {
+	if (ret == ERROR_FLASH_OPERATION_FAILED) {
 		uint32_t status = buf_get_u32(reg_params[4].value, 0, 32);
-		LOG_ERROR("Failed to run flash write algorithm on target. Status: 0x%" PRIx32, status);
+		char err_str[256] = {0};
+		aurix_eflash_get_error_string(status, err_str);
+		LOG_ERROR("Flash algorithm failed: %s", err_str);
 	}
 	target_free_working_area(target, source);
 
@@ -449,39 +510,52 @@ static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 	if (offset & ~(aurix_bank->page_size - 1) || count % aurix_bank->page_size != 0)
 		return ERROR_FLASH_DST_BREAKS_ALIGNMENT;
 
-	ret = aurix_eflash_check_busy(bank);
-	if (ret)
-		return ret;
-
-	ret = ocmts_io_write_u32(ocmts, aurix_bank->reg_addr + 0xC, 0x200);
-	if (ret)
-		return ret;
-
 	ret = aurix_eflash_write_algo(bank, bank->base + offset, buffer, count);
 	if (ret == ERROR_OK) {
 		return ERROR_OK;
 	} else if (ret != ERROR_TARGET_RESOURCE_NOT_AVAILABLE) {
-		LOG_ERROR("Failed to execute flash write algorithm.");
 		return ret;
 	} else {
 		LOG_WARNING("No enough resources to run flash write algorithm, fallback to "
 					"slow flash write sequence.");
 	}
 
+	ret = aurix_eflash_check_busy(bank);
+	if (ret)
+		return ret;
+
 	while (page_offset < count) {
 		const bool burst_mode = count - page_offset >= aurix_bank->burst_size;
 		const uint32_t copy_size = burst_mode ? aurix_bank->burst_size : aurix_bank->page_size;
 		uint32_t i;
 
-		ret = aurix_eflash_enter_page_mode(bank);
-		if (ret)
+		ret = aurix_eflash_clear_status(bank);
+		if (ret) {
+			LOG_ERROR("Flash program failed: failed to clear flash status");
 			return ret;
+		}
 
-		if (aurix_df_check_if_tc4x(bank->target->tap->idcode)) {
+		ret = aurix_eflash_enter_page_mode(bank);
+		if (ret) {
+			LOG_ERROR("Flash program failed: failed to enter page mode");
+			return ret;
+		}
+
+		if (aurix_bank->tc4x) {
 			for (i = 0; i < copy_size && page_offset + i < count; i += 4) {
 				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0x55F4, (void *)(buffer + page_offset + i));
 				if (ret)
 					goto err;
+			}
+			/* Clear status to reset request done from load page*/
+			ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, &(uint32_t){0xFA});
+			if (ret) {
+				ret = aurix_eflash_reset_to_read(bank);
+				if (ret) {
+					LOG_ERROR("Failed to reset flash to read mode. Please reset device to continue");
+				}
+				LOG_ERROR("Flash program failed: failed to clear flash status");
+				return ret;
 			}
 		} else {
 			for (i = 0; i < copy_size && page_offset + i < count; i += 4) {
@@ -519,15 +593,21 @@ static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 		ret = ocmts_run(ocmts);
 err:
 		if (ret) {
-			LOG_ERROR("Failed to execute flash program sequence at address: "
-					  "0x%08x, data size: %u",
-					  addr, copy_size);
-			aurix_eflash_reset_to_read(bank);
+			ret = aurix_eflash_reset_to_read(bank);
+			if (ret) {
+				LOG_ERROR("Failed to reset flash to read mode. Please reset device to continue");
+			}
+			LOG_ERROR(
+				"Flash program failed: failed to execute flash program sequence at address: 0x%08x, data size: %u",
+				addr, copy_size);
 			return ERROR_FLASH_OPERATION_FAILED;
 		}
 
-		if (aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->write_timeout_ms) != ERROR_OK)
+		if (aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->write_timeout_ms) != ERROR_OK) {
+			LOG_ERROR("Flash program failed: operation failed at address 0x%08" PRIx64,
+					  bank->base + offset + page_offset - copy_size);
 			return ERROR_FLASH_OPERATION_FAILED;
+		}
 	}
 
 	return ERROR_OK;
