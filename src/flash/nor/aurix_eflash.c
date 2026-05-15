@@ -368,19 +368,29 @@ sequence_err:
 	return ERROR_OK;
 }
 
+static const uint8_t tc4x_flash_write_code[] = {
+#include "../../../contrib/loaders/flash/aurix/tc4x-program.inc"
+};
+
+static const uint8_t tc3x_flash_write_code[] = {
+#include "../../../contrib/loaders/flash/aurix/tc3x-program.inc"
+};
+
 /* Start a low level flash write for the specified region */
 static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, const uint8_t *buffer, uint32_t bytes)
 {
+	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 	struct target *target = bank->target;
 	struct reg_param reg_params[5];
 	uint32_t buffer_size = 0x8000;
-	uint32_t ret;
+	int ret;
 	struct working_area *source;
-	static const uint8_t aurix_flash_write_code[] = {
-#include "../../../contrib/loaders/flash/aurix/tc4x-program.inc"
-	};
 
-	ret = target_write_buffer(target, 0x70100000, sizeof(aurix_flash_write_code), aurix_flash_write_code);
+	if (aurix_bank->tc4x) {
+		ret = target_write_buffer(target, 0x70100000, sizeof(tc4x_flash_write_code), tc4x_flash_write_code);
+	} else {
+		ret = target_write_buffer(target, 0x70100000, sizeof(tc3x_flash_write_code), tc3x_flash_write_code);
+	}
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -389,7 +399,6 @@ static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, co
 		buffer_size /= 2;
 		buffer_size &= ~3UL; /* Make sure it's 4 byte aligned */
 		if (buffer_size <= 256) {
-
 			LOG_WARNING("No large enough working area available, can't do block "
 						"memory writes");
 			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
