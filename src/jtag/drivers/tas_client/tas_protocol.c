@@ -615,8 +615,10 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 			tas_pl0rsp_st rsp_pl0;
 			memcpy(&rsp_pl0, rx_buffer + rx_offset, sizeof(rsp_pl0));
 			rx_offset += sizeof(rsp_pl0);
-			if (rsp_pl0.err != TAS_PL0_ERR_NO_ERROR)
+			if (rsp_pl0.err != TAS_PL0_ERR_NO_ERROR) {
+				LOG_DEBUG("Memory request failed at address 0x%08X with error code %x", mem_reqs[i].addr, rsp_pl0.err);
 				return ERROR_FAIL;
+			}
 			if (mem_reqs[i].is_read) {
 				memcpy(mem_reqs[i].buffer, rx_buffer + rx_offset, mem_reqs[i].length);
 				rx_offset += mem_reqs[i].length;
