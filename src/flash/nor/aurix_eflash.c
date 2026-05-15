@@ -56,6 +56,8 @@ struct aurix_eflash_bank {
 	bool probed;
 	/** TC4 eflash */
 	bool tc4x;
+	/** Fallback mode for flash write */
+	bool fallback_mode;
 	/** Write timeout in milliseconds */
 	uint64_t write_timeout_ms;
 	/** Erase timeout in milliseconds */
@@ -510,6 +512,9 @@ static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 	if (offset & ~(aurix_bank->page_size - 1) || count % aurix_bank->page_size != 0)
 		return ERROR_FLASH_DST_BREAKS_ALIGNMENT;
 
+	if (aurix_bank->fallback_mode)
+		goto fallback;
+
 	ret = aurix_eflash_write_algo(bank, bank->base + offset, buffer, count);
 	if (ret == ERROR_OK) {
 		return ERROR_OK;
@@ -520,6 +525,7 @@ static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 					"slow flash write sequence.");
 	}
 
+fallback:
 	ret = aurix_eflash_check_busy(bank);
 	if (ret)
 		return ret;
@@ -692,6 +698,7 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 	tc3x_bank->write_timeout_ms = 10;
 	tc3x_bank->erase_timeout_ms = is_ucb ? 200 : is_dflash ? 500 : 400;
 
+	tc3x_bank->fallback_mode = false;
 	tc3x_bank->tc4x = false;
 	tc3x_bank->probed = false;
 	bank->driver_priv = tc3x_bank;
@@ -785,6 +792,7 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	tc4x_bank->write_timeout_ms = 10;
 	tc4x_bank->erase_timeout_ms = is_ucb ? 200 : is_dflash ? 500 : 400;
 
+	tc4x_bank->fallback_mode = false;
 	tc4x_bank->tc4x = true;
 	tc4x_bank->probed = false;
 	bank->driver_priv = tc4x_bank;
@@ -792,9 +800,61 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(aurix_eflash_set_fallback_mode_command)
+{
+	struct flash_bank *bank;
+	struct aurix_eflash_bank *aurix_bank;
+
+	if (CMD_ARGC < 1 || CMD_ARGC > 2) {
+		return ERROR_COMMAND_ARGUMENT_INVALID;
+	}
+
+	int retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
+	if (retval != ERROR_OK)
+		return retval;
+	aurix_bank = bank->driver_priv;
+
+	if (CMD_ARGC == 2) {
+		if (strcmp(CMD_ARGV[1], "on") == 0) {
+			aurix_bank->fallback_mode = true;
+		} else if (strcmp(CMD_ARGV[1], "off") == 0) {
+			aurix_bank->fallback_mode = false;
+		} else {
+			LOG_ERROR("Invalid fallback mode: %s. Should be 'on' or 'off'.", CMD_ARGV[1]);
+			return ERROR_COMMAND_ARGUMENT_INVALID;
+		}
+	} else {
+		aurix_bank->fallback_mode = !aurix_bank->fallback_mode;
+	}
+
+	return ERROR_OK;
+}
+
+static const struct command_registration aurix_eflash_subcommand_handlers[] = {
+	{
+		.name = "fallback",
+		.handler = aurix_eflash_set_fallback_mode_command,
+		.mode = COMMAND_EXEC,
+		.usage = "<bank> [on|off]",
+		.help = "Set or toggle fallback mode for flash write. In fallback mode, the driver will use slow flash write "
+				"sequence instead of flash write algorithm.",
+	},
+	COMMAND_REGISTRATION_DONE};
+
+static const struct command_registration aurix_eflash_command_handlers[] = {
+	{
+		.name = "aurix_eflash",
+		.mode = COMMAND_ANY,
+		.usage = "",
+		.help = "Commands for Aurix eFLASH driver",
+		.chain = aurix_eflash_subcommand_handlers,
+	},
+	COMMAND_REGISTRATION_DONE};
+
 const struct flash_driver tc3x_eflash = {
 	.name = "tc3x_eflash",
 	.flash_bank_command = tc3x_flash_bank_command,
+	.commands = aurix_eflash_command_handlers,
 	.probe = tc3x_eflash_probe,
 	.auto_probe = tc3x_eflash_auto_probe,
 	.erase = aurix_eflash_erase,
@@ -806,6 +866,7 @@ const struct flash_driver tc3x_eflash = {
 const struct flash_driver tc4x_eflash = {
 	.name = "tc4x_eflash",
 	.flash_bank_command = tc4x_flash_bank_command,
+	.commands = aurix_eflash_command_handlers,
 	.probe = tc4x_eflash_probe,
 	.auto_probe = tc4x_eflash_auto_probe,
 	.erase = aurix_eflash_erase,
