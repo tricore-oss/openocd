@@ -15,13 +15,16 @@
 #include <helper/time_support.h>
 #include <jtag/jtag.h>
 
+#include "helper/binarybuffer.h"
 #include "helper/log.h"
 #include "helper/types.h"
 #include "rtos.h"
 #include "rtos_standard_stackings.h"
+#include "target/register.h"
 #include "target/target.h"
 #include "target/armv7m.h"
 #include "target/arc.h"
+#include "target/aurix/tricore.h"
 
 #define UNIMPLEMENTED 0xFFFFFFFFU
 
@@ -105,6 +108,26 @@ static const struct stack_register_offset arc_callee_saved[] = {
 	{ ARC_FP,  56,  32 },
 	{ ARC_R30,  60,  32 }
 };
+
+static const struct stack_register_offset tricore_callee_saved[] = {
+	{TRICORE_PCXI, 0, 32},
+	{TRICORE_PSW, 4, 32},
+	{TRICORE_A10, 8, 32},
+	{TRICORE_A11, 12, 32},
+	{TRICORE_D8, 16, 32},
+	{TRICORE_D9, 20, 32},
+	{TRICORE_D10, 24, 32},
+	{TRICORE_D11, 28, 32},
+	{TRICORE_A12, 32, 32},
+	{TRICORE_A13, 36, 32},
+	{TRICORE_A14, 40, 32},
+	{TRICORE_A15, 44, 32},
+	{TRICORE_D12, 48, 32},
+	{TRICORE_D13, 52, 32},
+	{TRICORE_D14, 56, 32},
+	{TRICORE_D15, 60, 32},
+};
+
 static const struct rtos_register_stacking arm_callee_saved_stacking = {
 	.stack_registers_size = 36,
 	.stack_growth_direction = -1,
@@ -117,6 +140,13 @@ static const struct rtos_register_stacking arc_callee_saved_stacking = {
 	.stack_growth_direction = -1,
 	.num_output_registers = ARRAY_SIZE(arc_callee_saved),
 	.register_offsets = arc_callee_saved,
+};
+
+static const struct rtos_register_stacking tricore_callee_saved_stacking = {
+	.stack_registers_size = 64,
+	.stack_growth_direction = -1,
+	.num_output_registers = ARRAY_SIZE(tricore_callee_saved),
+	.register_offsets = tricore_callee_saved,
 };
 
 static const struct stack_register_offset arm_cpu_saved[] = {
@@ -180,6 +210,45 @@ static struct stack_register_offset arc_cpu_saved[] = {
 	{ ARC_STATUS32,		 4,  32 }
 };
 
+static struct stack_register_offset tricore_cpu_saved[] = {
+	/* Lower context register */
+	{TRICORE_D0, 16, 32},
+	{TRICORE_D1, 20, 32},
+	{TRICORE_D2, 24, 32},
+	{TRICORE_D3, 28, 32},
+	{TRICORE_D4, 48, 32},
+	{TRICORE_D5, 52, 32},
+	{TRICORE_D6, 56, 32},
+	{TRICORE_D7, 60, 32},
+	{TRICORE_D8, -1, 32},
+	{TRICORE_D9, -1, 32},
+	{TRICORE_D10, -1, 32},
+	{TRICORE_D11, -1, 32},
+	{TRICORE_D12, -1, 32},
+	{TRICORE_D13, -1, 32},
+	{TRICORE_D14, -1, 32},
+	{TRICORE_D15, -1, 32},
+	{TRICORE_A0, -1, 32},
+	{TRICORE_A1, -1, 32},
+	{TRICORE_A2, 8, 32},
+	{TRICORE_A3, 12, 32},
+	{TRICORE_A4, 32, 32},
+	{TRICORE_A5, 36, 32},
+	{TRICORE_A6, 40, 32},
+	{TRICORE_A7, 44, 32},
+	{TRICORE_A8, -1, 32},
+	{TRICORE_A9, -1, 32},
+	{TRICORE_A10, -1, 32},
+	{TRICORE_A11, -1, 32},
+	{TRICORE_A12, -1, 32},
+	{TRICORE_A13, -1, 32},
+	{TRICORE_A14, -1, 32},
+	{TRICORE_A15, -1, 32},
+	{TRICORE_PCXI, 0, 32},
+	{TRICORE_PSW, -1, 32},
+	{TRICORE_PC, 4, 32},
+	{TRICORE_ICR, -1, 32},
+};
 
 enum zephyr_symbol_values {
 	ZEPHYR_VAL__KERNEL,
@@ -220,6 +289,13 @@ static struct rtos_register_stacking arc_cpu_saved_stacking = {
 	.stack_growth_direction = -1,
 	.num_output_registers = ARRAY_SIZE(arc_cpu_saved),
 	.register_offsets = arc_cpu_saved,
+};
+
+static struct rtos_register_stacking tricore_cpu_saved_stacking = {
+	.stack_registers_size = 64,
+	.stack_growth_direction = -1,
+	.num_output_registers = ARRAY_SIZE(tricore_cpu_saved),
+	.register_offsets = tricore_cpu_saved,
 };
 
 /* ARCv2 specific implementation */
@@ -331,6 +407,66 @@ static int zephyr_get_arm_state(struct rtos *rtos, target_addr_t *addr,
 	return 0;
 }
 
+static int zephyr_get_tricore_state(struct rtos *rtos, target_addr_t *addr,
+                                    struct zephyr_params *params,
+                                    struct rtos_reg *callee_saved_reg_list,
+                                    struct rtos_reg **reg_list, int *num_regs) {
+  uint32_t ctx;
+  int num_callee_saved_regs;
+  int ret, i;
+
+  /* PCXI value is stored in the arch specific struct */
+  ret = target_read_u32(rtos->target, *addr, &ctx);
+  if (ret != ERROR_OK)
+    return ret;
+
+  /* Convert PCXI value to memory address  */
+  *addr = ((ctx & 0xF0000) << 12) | ((ctx & 0xFFFF) << 6);
+
+  ret = rtos_generic_stack_read(rtos->target, params->cpu_saved_nofp_stacking,
+                                *addr, reg_list, num_regs);
+
+  /* Load next context from register */
+  ctx = buf_get_u32((*reg_list)[TRICORE_PCXI].value, 0, 32);
+  *addr = ((ctx & 0xF0000) << 12) | ((ctx & 0xFFFF) << 6);
+
+  ret = rtos_generic_stack_read(rtos->target, params->callee_saved_stacking,
+                                *addr, &callee_saved_reg_list,
+                                &num_callee_saved_regs);
+
+  for (i = 0; i < num_callee_saved_regs; i++)
+    buf_cpy(callee_saved_reg_list[i].value,
+            (*reg_list)[callee_saved_reg_list[i].number].value,
+            callee_saved_reg_list[i].size);
+
+  struct reg *a0 = register_get_by_name(rtos->target->reg_cache, "a0", false);
+  struct reg *a1 = register_get_by_name(rtos->target->reg_cache, "a1", false);
+  struct reg *a8 = register_get_by_name(rtos->target->reg_cache, "a8", false);
+  struct reg *a9 = register_get_by_name(rtos->target->reg_cache, "a9", false);
+  struct reg *icr = register_get_by_name(rtos->target->reg_cache, "icr", false);
+  uint32_t icr_value;
+
+  /* Load global register */
+  a0->type->get(a0);
+  a1->type->get(a1);
+  a8->type->get(a8);
+  a9->type->get(a9);
+
+  /* Restore ICR register and load pending priority number */
+  icr->type->get(icr);
+  icr_value = (((ctx >> 21) & 1) << 15) | ((ctx >> 22) & 0xFF);
+  icr_value |= buf_get_u32(icr->value, 0, 32) & 0xFF0000;
+
+  /* Set calculated register */
+  buf_set_u32((*reg_list)[TRICORE_ICR].value, 0, 32, icr_value);
+  buf_cpy(a0->value, (*reg_list)[TRICORE_A0].value, 32);
+  buf_cpy(a1->value, (*reg_list)[TRICORE_A1].value, 32);
+  buf_cpy(a8->value, (*reg_list)[TRICORE_A8].value, 32);
+  buf_cpy(a9->value, (*reg_list)[TRICORE_A9].value, 32);
+
+  return ERROR_OK;
+}
+
 static struct zephyr_params zephyr_params_list[] = {
 	{
 		.target_name = "cortex_m",
@@ -363,6 +499,13 @@ static struct zephyr_params zephyr_params_list[] = {
 		.callee_saved_stacking = &arc_callee_saved_stacking,
 		.cpu_saved_nofp_stacking = &arc_cpu_saved_stacking,
 		.get_cpu_state = &zephyr_get_arc_state,
+	},
+	{
+		.target_name = "tricore",
+		.pointer_width = 4,
+		.callee_saved_stacking = &tricore_callee_saved_stacking,
+		.cpu_saved_nofp_stacking = &tricore_cpu_saved_stacking,
+		.get_cpu_state = &zephyr_get_tricore_state,
 	},
 	{
 		.target_name = NULL
@@ -522,11 +665,13 @@ static int zephyr_fetch_thread(const struct rtos *rtos,
 	if (retval != ERROR_OK)
 		return retval;
 
-	retval = target_read_u32(rtos->target,
-				 ptr + param->offsets[OFFSET_T_STACK_POINTER],
-				 &thread->stack_pointer);
-	if (retval != ERROR_OK)
-		return retval;
+	if (param->offsets[OFFSET_T_STACK_POINTER] != UNIMPLEMENTED) {
+		retval = target_read_u32(rtos->target,
+					 ptr + param->offsets[OFFSET_T_STACK_POINTER],
+					 &thread->stack_pointer);
+		if (retval != ERROR_OK)
+			return retval;
+	}
 
 	retval = target_read_u8(rtos->target, ptr + param->offsets[OFFSET_T_STATE],
 				&thread->state);
