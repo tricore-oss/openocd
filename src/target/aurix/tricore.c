@@ -826,10 +826,49 @@ int tricore_write_memory(struct target *target, target_addr_t address, uint32_t 
 	return ERROR_OK;
 }
 
+static const uint8_t tricore_crc_program[] = {
+#include "contrib/loaders/checksum/tricore.inc"
+};
+
 int tricore_checksum_memory(struct target *target, target_addr_t address, uint32_t count, uint32_t *checksum)
 {
+
+	int ret;
+	const size_t crc_code_size = ARRAY_SIZE(tricore_crc_program);
+
+	if (count < crc_code_size * 4) {
+		/* Don't use the algorithm for relatively small buffers. It's faster
+		 * just to read the memory.  target_checksum_memory() will take care of
+		 * that if we fail. */
+		return ERROR_FAIL;
+	}
+
+	if (0x70100000 + crc_code_size > address && 0x70100000 < address + count) {
+		LOG_TARGET_ERROR(target, "Memory range overlaps with CRC program");
+		return ERROR_FAIL;
+	}
+
+	ret = target_write_memory(target, 0x70100000, 4, ARRAY_SIZE(tricore_crc_program), tricore_crc_program);
+	if (ret) {
+		LOG_TARGET_ERROR(target, "Failed to write CRC program to target");
+		return ret;
+	}
+
+	struct reg_param reg_params[] = {
+		{.reg_name = "a4", .size = 32, .value = (uint8_t *)&address, .direction = PARAM_OUT},
+		{.reg_name = "d4", .size = 32, .value = (uint8_t *)&count, .direction = PARAM_OUT},
+		{.reg_name = "d2", .size = 32, .value = (uint8_t *)checksum, .direction = PARAM_IN},
+	};
+
+	ret = target_run_algorithm(target, 0, NULL, 3, reg_params, 0x70100000, 0, 100, NULL);
+	if (ret) {
+		LOG_TARGET_ERROR(target, "Failed to run CRC program on target");
+		return ret;
+	}
+
 	return ERROR_FAIL;
 }
+
 int tricore_blank_check_memory(struct target *target, struct target_memory_check_block *blocks, int num_blocks,
 							   uint8_t erased_value)
 {
