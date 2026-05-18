@@ -32,6 +32,8 @@ struct aurix_eflash_bank {
 	target_addr_t cmd_addr;
 	/** Address of the DMU registers */
 	target_addr_t reg_addr;
+	/** Address of the FSI registers */
+	target_addr_t fsi_addr;
 	/** Offset of the error register for a given command sequencer */
 	target_addr_t err_offset;
 	/** Offset of the status register for a ginven command sequencer */
@@ -212,7 +214,7 @@ static inline int aurix_eflash_clear_status(struct flash_bank *bank)
 	return ocmts_io_write_u32(ocmts, aurix_bank->cmd_addr + 0x5554, clear_status_key);
 }
 
-static inline void aurix_eflash_get_error_string(uint32_t flash_err, char *err_str)
+static inline void aurix_eflash_get_error_string_tc4x(uint32_t flash_err, char *err_str)
 {
 	if (flash_err & (1 << 0))
 		strcat(err_str, " SRI bus address error");
@@ -238,9 +240,41 @@ static inline void aurix_eflash_get_error_string(uint32_t flash_err, char *err_s
 		strcat(err_str, " Flash busy");
 }
 
-static inline int aurix_eflash_handle_error(struct flash_bank *bank, uint32_t sts_bit, int64_t timeout_ms)
+static inline void aurix_eflash_get_error_string_tc3x(uint32_t flash_err, char *err_str)
 {
-	struct aurix_eflash_bank *tc3x_bank = bank->driver_priv;
+	if (flash_err & (1 << 0))
+		strcat(err_str, " Flash Operation Error");
+	if (flash_err & (1 << 1))
+		strcat(err_str, " Command sequence error");
+	if (flash_err & (1 << 2))
+		strcat(err_str, " Protection error");
+	if (flash_err & (1 << 3))
+		strcat(err_str, " Program Verify Error");
+	if (flash_err & (1 << 4))
+		strcat(err_str, " Erase Verify Error");
+	if (flash_err & (1 << 5))
+		strcat(err_str, " SRI Bus Address ECC Error");
+	if (flash_err & (1 << 6))
+		strcat(err_str, " Original Error");
+	if (flash_err & (1 << 30))
+		strcat(err_str, " Flash operation timeout");
+	if (flash_err & (1 << 31))
+		strcat(err_str, " Flash busy");
+}
+
+static inline void aurix_eflash_get_error_string(struct aurix_eflash_bank *aurix_bank, uint32_t flash_err, char *err_str)
+{
+	if (aurix_bank->tc4x) {
+		aurix_eflash_get_error_string_tc4x(flash_err, err_str);
+	} else {
+		aurix_eflash_get_error_string_tc3x(flash_err, err_str);
+	}
+}
+
+static inline int aurix_eflash_handle_error(struct flash_bank *bank, uint32_t sts_bit, int64_t timeout_ms,
+											bool *verify_error)
+{
+	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
 	uint32_t flash_err = 0;
 	uint32_t flash_busy = 0xFFFFFFFF;
@@ -249,10 +283,10 @@ static inline int aurix_eflash_handle_error(struct flash_bank *bank, uint32_t st
 	bool timeout_occurred = true;
 
 	while (start_time + timeout_ms > timeval_ms()) {
-		ret = ocmts_queue_read_u32(ocmts, tc3x_bank->reg_addr + tc3x_bank->err_offset, &flash_err);
+		ret = ocmts_queue_read_u32(ocmts, aurix_bank->reg_addr + aurix_bank->err_offset, &flash_err);
 		if (ret)
 			goto status_err;
-		ret = ocmts_queue_read_u32(ocmts, tc3x_bank->reg_addr + tc3x_bank->sts_offset, &flash_busy);
+		ret = ocmts_queue_read_u32(ocmts, aurix_bank->reg_addr + aurix_bank->sts_offset, &flash_busy);
 		if (ret)
 			goto status_err;
 		ret = ocmts_run(ocmts);
@@ -262,17 +296,15 @@ status_err:
 			LOG_ERROR("Failed to read flash operation status");
 			return ERROR_FLASH_OPERATION_FAILED;
 		}
-		if (flash_err) {
-			timeout_occurred = false;
-			break;
-		}
-		if (tc3x_bank->tc4x) {
+		if (aurix_bank->tc4x) {
 			if (flash_busy & (1 << 31)) {
 				timeout_occurred = false;
+				break;
 			}
 		} else {
 			if (!(flash_busy & (1 << sts_bit))) {
 				timeout_occurred = false;
+				break;
 			}
 		}
 		usleep(100);
@@ -283,10 +315,22 @@ status_err:
 	}
 
 	if (flash_err) {
+		uint32_t verify_bit = aurix_bank->tc4x ? 7 : 4;
+		uint32_t faltal_mask = aurix_bank->tc4x ? ((1 << 8) | (1 << 5)) : (1 << 0);
+		if (verify_error) {
+			if (flash_err & (1 << verify_bit)) {
+				*verify_error = true;
+				ret = aurix_eflash_clear_status(bank);
+				if (ret) {
+					LOG_ERROR("Failed to clear flash status. Please reset device to continue");
+				}
+				return ERROR_OK;
+			}
+		}
 		char err_str[256] = {0};
-		aurix_eflash_get_error_string(flash_err, err_str);
+		aurix_eflash_get_error_string(aurix_bank, flash_err, err_str);
 		LOG_ERROR("Flash operation failed with error:%s", err_str);
-		if (flash_err & ((1 << 5) | (1 << 8))) {
+		if (flash_err & faltal_mask) {
 			LOG_ERROR("Critical flash error. Please reset device to continue");
 		} else if (flash_err & ((1 << 1) | (1 << 2))) {
 			ret = aurix_eflash_reset_to_read(bank);
@@ -297,6 +341,9 @@ status_err:
 			LOG_ERROR("Failed to clear flash status. Please reset device to continue");
 		}
 		ret = ERROR_FLASH_OPERATION_FAILED;
+	} else {
+		if (verify_error)
+			*verify_error = false;
 	}
 
 	return ret;
@@ -346,7 +393,7 @@ static inline int aurix_eflash_enter_page_mode(struct flash_bank *bank, bool dfl
 	}
 	if (flash_err) {
 		char err_str[256] = {0};
-		aurix_eflash_get_error_string(flash_err, err_str);
+		aurix_eflash_get_error_string(aurix_bank, flash_err, err_str);
 		LOG_ERROR("Failed to enter page mode with error: %s", err_str);
 		ret = aurix_eflash_reset_to_read(bank);
 		if (ret) {
@@ -428,7 +475,7 @@ sequence_err:
 		}
 		first += sector_count;
 
-		ret = aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->erase_timeout_ms);
+		ret = aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->erase_timeout_ms, NULL);
 		if (ret) {
 			LOG_ERROR("Flash erase failed: operation failed at address 0x%08" PRIx64,
 					  bank->base + bank->sectors[first].offset);
@@ -436,6 +483,127 @@ sequence_err:
 		}
 	}
 
+	return ERROR_OK;
+}
+
+int aurix_eflash_erase_check(struct flash_bank *bank)
+{
+	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
+	struct ocmts *ocmts = target_to_tricore(bank->target)->ocmts;
+	int ret;
+	size_t sector;
+
+	if (bank->target->state != TARGET_HALTED) {
+		LOG_ERROR("Target not halted");
+		return ERROR_TARGET_NOT_HALTED;
+	}
+
+	ret = aurix_eflash_check_busy(bank);
+	if (ret) {
+		LOG_ERROR("Flash verify failed: flash is busy");
+		return ret;
+	}
+
+	ret = aurix_eflash_clear_status(bank);
+	if (ret) {
+		LOG_ERROR("Flash verify failed: failed to clear flash status");
+		return ret;
+	}
+
+	for (sector = 0; sector < bank->num_sectors; sector += aurix_bank->num_erase_sectors) {
+
+		/* Put address always in segment 0xA */
+		uint32_t addr = (~0xF0000000 & (bank->base + bank->sectors[sector].offset)) + 0xA0000000;
+		uint32_t verify_sectors = aurix_bank->num_erase_sectors;
+
+		ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAA50, &addr);
+		if (ret)
+			goto sequence_err;
+		ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAA58, &verify_sectors);
+		if (ret)
+			goto sequence_err;
+		ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAAA8, &(uint32_t){0x80});
+		if (ret)
+			goto sequence_err;
+		ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAAA8, &(uint32_t){0x5F});
+		if (ret)
+			goto sequence_err;
+		ret = ocmts_run(ocmts);
+sequence_err:
+		if (ret) {
+			ret = aurix_eflash_reset_to_read(bank);
+			if (ret) {
+				LOG_WARNING("Failed to reset flash to read mode. Please reset device to continue");
+			}
+			LOG_ERROR("Flash verify failed: failed to execute erase sequence address: 0x%08x, "
+					  "sector count: %u",
+					  addr, aurix_bank->num_erase_sectors);
+			return ERROR_FLASH_OPERATION_FAILED;
+		}
+
+		bool verify_error = false;
+		ret = aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->erase_timeout_ms, &verify_error);
+		if (ret) {
+			LOG_ERROR("Flash verify failed: operation failed at address 0x%08" PRIx64,
+					  bank->base + bank->sectors[sector].offset);
+			return ret;
+		}
+
+		uint32_t i;
+		if (!verify_error) {
+			for (i = sector; i < sector + verify_sectors && i < bank->num_sectors; i++) {
+				bank->sectors[i].is_erased = 1;
+			}
+		} else {
+			uint8_t failed_sector = 0;
+			if (aurix_bank->tc4x) {
+				ret = ocmts_io_read_u8(ocmts, aurix_bank->fsi_addr + (aurix_bank->tc4x ? 0x1 : 0x4), &failed_sector);
+				if (ret) {
+					LOG_ERROR("Failed to read failed sector address");
+					return ERROR_FLASH_OPERATION_FAILED;
+				}
+			}
+
+			for (i = sector + failed_sector; i < sector + verify_sectors && i < bank->num_sectors; i++) {
+				/* Put address always in segment 0xA */
+				addr = (~0xF0000000 & (bank->base + bank->sectors[i].offset)) + 0xA0000000;
+				uint32_t single_sector = 1;
+				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAA50, &addr);
+				if (ret)
+					goto sequence_err2;
+				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAA58, &single_sector);
+				if (ret)
+					goto sequence_err2;
+				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAAA8, &(uint32_t){0x80});
+				if (ret)
+					goto sequence_err2;
+				ret = ocmts_queue_write_u32(ocmts, aurix_bank->cmd_addr + 0xAAA8, &(uint32_t){0x5F});
+				if (ret)
+					goto sequence_err2;
+				ret = ocmts_run(ocmts);
+sequence_err2:
+				if (ret) {
+					ret = aurix_eflash_reset_to_read(bank);
+					if (ret) {
+						LOG_WARNING("Failed to reset flash to read mode. Please reset device to continue");
+					}
+					LOG_ERROR("Flash verify failed: failed to execute erase sequence address: 0x%08x, "
+							  "sector count: %u",
+							  addr, aurix_bank->num_erase_sectors);
+					return ERROR_FLASH_OPERATION_FAILED;
+				}
+
+				ret =
+					aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->erase_timeout_ms, &verify_error);
+				if (ret) {
+					LOG_ERROR("Flash verify failed: operation failed at address 0x%08" PRIx64,
+							  bank->base + bank->sectors[sector].offset);
+					return ret;
+				}
+				bank->sectors[i].is_erased = verify_error ? 0 : 1;
+			}
+		}
+	}
 	return ERROR_OK;
 }
 
@@ -493,7 +661,7 @@ static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, co
 	if (ret == ERROR_FLASH_OPERATION_FAILED) {
 		uint32_t status = buf_get_u32(reg_params[4].value, 0, 32);
 		char err_str[256] = {0};
-		aurix_eflash_get_error_string(status, err_str);
+		aurix_eflash_get_error_string(aurix_bank, status, err_str);
 		LOG_ERROR("Flash algorithm failed: %s", err_str);
 	}
 	target_free_working_area(target, source);
@@ -519,7 +687,7 @@ static int aurix_eflash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
-	if (offset & ~(aurix_bank->page_size - 1) || count % aurix_bank->page_size != 0)
+	if (offset & (aurix_bank->page_size - 1) || count % aurix_bank->page_size != 0)
 		return ERROR_FLASH_DST_BREAKS_ALIGNMENT;
 
 	if (aurix_bank->fallback_mode)
@@ -620,7 +788,7 @@ err:
 			return ERROR_FLASH_OPERATION_FAILED;
 		}
 
-		if (aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->write_timeout_ms) != ERROR_OK) {
+		if (aurix_eflash_handle_error(bank, aurix_bank->busy_bit, aurix_bank->write_timeout_ms, NULL) != ERROR_OK) {
 			LOG_ERROR("Flash program failed: operation failed at address 0x%08" PRIx64,
 					  bank->base + offset + page_offset - copy_size);
 			return ERROR_FLASH_OPERATION_FAILED;
@@ -690,6 +858,7 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 	 * required */
 	tc3x_bank->cmd_addr = 0xAF000000;
 	tc3x_bank->reg_addr = 0xF8040000;
+	tc3x_bank->fsi_addr = 0xF8030000;
 	tc3x_bank->sts_offset = 0x10;
 	tc3x_bank->err_offset = 0x34;
 	tc3x_bank->busy_bit = is_pflash ? bank->bank_number + 2 : is_dflash0 ? 0 : 1;
@@ -782,10 +951,12 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 		tc4x_bank->cmd_addr = 0xF80C0000;
 		tc4x_bank->sts_offset = 0x84;
 		tc4x_bank->err_offset = 0x90;
+		tc4x_bank->fsi_addr = 0xF8028000;
 	} else {
 		tc4x_bank->cmd_addr = 0xF8080000;
 		tc4x_bank->sts_offset = 0x4;
 		tc4x_bank->err_offset = 0x10;
+		tc4x_bank->fsi_addr = 0xF8008000;
 	}
 	tc4x_bank->reg_addr = 0xF8040000;
 	tc4x_bank->busy_bit = is_pflash0 ? bank->bank_number : is_pflash1 ? 18 : is_dflash0 ? 16 : 17;
@@ -873,6 +1044,7 @@ const struct flash_driver tc3x_eflash = {
 	.erase = aurix_eflash_erase,
 	.write = aurix_eflash_write,
 	.read = aurix_eflash_read,
+	.erase_check = aurix_eflash_erase_check,
 	.free_driver_priv = aurix_free_driver_priv,
 };
 
@@ -885,5 +1057,6 @@ const struct flash_driver tc4x_eflash = {
 	.erase = aurix_eflash_erase,
 	.write = aurix_eflash_write,
 	.read = aurix_eflash_read,
+	.erase_check = aurix_eflash_erase_check,
 	.free_driver_priv = aurix_free_driver_priv,
 };
