@@ -42,16 +42,15 @@ int tricore_unset_breakpoint(struct target *target, struct breakpoint *breakpoin
 static const struct {
 	const char *const name;
 	uint16_t addr;
-	bool caller_saved;
 } tricore_core_regs[] = {
-	{.name = "d0", .addr = 0xFF00, .caller_saved = true},
-	{.name = "d1", .addr = 0xFF04, .caller_saved = true},
-	{.name = "d2", .addr = 0xFF08, .caller_saved = true},
-	{.name = "d3", .addr = 0xFF0C, .caller_saved = true},
-	{.name = "d4", .addr = 0xFF10, .caller_saved = true},
-	{.name = "d5", .addr = 0xFF14, .caller_saved = true},
-	{.name = "d6", .addr = 0xFF18, .caller_saved = true},
-	{.name = "d7", .addr = 0xFF1C, .caller_saved = true},
+	{.name = "d0", .addr = 0xFF00},
+	{.name = "d1", .addr = 0xFF04},
+	{.name = "d2", .addr = 0xFF08},
+	{.name = "d3", .addr = 0xFF0C},
+	{.name = "d4", .addr = 0xFF10},
+	{.name = "d5", .addr = 0xFF14},
+	{.name = "d6", .addr = 0xFF18},
+	{.name = "d7", .addr = 0xFF1C},
 	{.name = "d8", .addr = 0xFF20},
 	{.name = "d9", .addr = 0xFF24},
 	{.name = "d10", .addr = 0xFF28},
@@ -60,34 +59,26 @@ static const struct {
 	{.name = "d13", .addr = 0xFF34},
 	{.name = "d14", .addr = 0xFF38},
 	{.name = "d15", .addr = 0xFF3C},
-	{.name = "a0", .addr = 0xFF80, .caller_saved = true},
-	{.name = "a1", .addr = 0xFF84, .caller_saved = true},
-	{.name = "a2", .addr = 0xFF88, .caller_saved = true},
-	{.name = "a3", .addr = 0xFF8C, .caller_saved = true},
-	{.name = "a4", .addr = 0xFF90, .caller_saved = true},
-	{.name = "a5", .addr = 0xFF94, .caller_saved = true},
-	{.name = "a6", .addr = 0xFF98, .caller_saved = true},
-	{.name = "a7", .addr = 0xFF9C, .caller_saved = true},
-	{.name = "a8", .addr = 0xFFA0, .caller_saved = true},
-	{.name = "a9", .addr = 0xFFA4, .caller_saved = true},
+	{.name = "a0", .addr = 0xFF80},
+	{.name = "a1", .addr = 0xFF84},
+	{.name = "a2", .addr = 0xFF88},
+	{.name = "a3", .addr = 0xFF8C},
+	{.name = "a4", .addr = 0xFF90},
+	{.name = "a5", .addr = 0xFF94},
+	{.name = "a6", .addr = 0xFF98},
+	{.name = "a7", .addr = 0xFF9C},
+	{.name = "a8", .addr = 0xFFA0},
+	{.name = "a9", .addr = 0xFFA4},
 	{.name = "a10", .addr = 0xFFA8},
 	{.name = "a11", .addr = 0xFFAC},
 	{.name = "a12", .addr = 0xFFB0},
 	{.name = "a13", .addr = 0xFFB4},
 	{.name = "a14", .addr = 0xFFB8},
 	{.name = "a15", .addr = 0xFFBC},
-	{.name = "lcx", .addr = 0xFE3C},
-	{.name = "fcx", .addr = 0xFE38},
 	{.name = "pcx", .addr = 0xFE00},
 	{.name = "psw", .addr = 0xFE04},
 	{.name = "pc", .addr = 0xFE08},
 	{.name = "icr", .addr = 0xFE2C},
-	{.name = "isp", .addr = 0xFE28},
-	{.name = "btv", .addr = 0xFE24},
-	{.name = "biv", .addr = 0xFE20},
-	{.name = "syscon", .addr = 0xFE14},
-	{.name = "pcon0", .addr = 0x920C},
-	{.name = "dcon0", .addr = 0x9040},
 };
 
 static struct reg_feature tricore_core_feature = {
@@ -96,7 +87,7 @@ static struct reg_feature tricore_core_feature = {
 
 static int tricore_build_reg_cache(struct target *target, const struct reg_arch_type *type)
 {
-	int num_regs = ARRAY_SIZE(tricore_core_regs);
+	const int num_regs = ARRAY_SIZE(tricore_core_regs);
 	struct tricore_info *tricore = target_to_tricore(target);
 	struct reg_cache *cache = malloc(sizeof(struct reg_cache));
 	struct reg *reg_list = calloc(num_regs, sizeof(struct reg));
@@ -129,21 +120,16 @@ static int tricore_build_reg_cache(struct target *target, const struct reg_arch_
 		reg_list[i].arch_info = &reg_arch_info[i];
 		reg_list[i].exist = true;
 
-		/* This really depends on the calling convention in use */
-		reg_list[i].caller_save = tricore_core_regs[i].caller_saved;
-
 		/* Registers data type, as used by GDB target description */
 		reg_list[i].reg_data_type = calloc(1, sizeof(struct reg_data_type));
 		if (i < 16)
 			reg_list[i].reg_data_type->type = REG_TYPE_INT;
 		else if (i < 32)
 			reg_list[i].reg_data_type->type = REG_TYPE_DATA_PTR;
-		else if (i == 34 || i == 35)
-			reg_list[i].reg_data_type->type = REG_TYPE_UINT32;
-		else if (i == 36 || i == 40 || i == 39)
+		else if (i == 34)
 			reg_list[i].reg_data_type->type = REG_TYPE_CODE_PTR;
 		else
-			reg_list[i].reg_data_type->type = REG_TYPE_INT;
+			reg_list[i].reg_data_type->type = REG_TYPE_UINT32;
 
 		reg_list[i].feature = &tricore_core_feature;
 		reg_list[i].group = "general";
@@ -151,7 +137,7 @@ static int tricore_build_reg_cache(struct target *target, const struct reg_arch_
 		cache->num_regs++;
 	}
 
-	tricore->pc = &reg_list[36];
+	tricore->pc = &reg_list[34];
 
 	return ERROR_OK;
 }
