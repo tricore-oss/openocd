@@ -97,7 +97,8 @@ static int tc3x_eflash_probe(struct flash_bank *bank)
 			return retval;
 		}
 
-		if (((chipid & UCB_CHIPID_PROD) >> 26) != 13) {
+		uint32_t prod = (chipid & UCB_CHIPID_PROD) >> 26;
+		if (prod != 13 && prod != 9) {
 			LOG_ERROR("CHIPID register does not match tc4x with eFLASH.");
 			return ERROR_FAIL;
 		}
@@ -162,7 +163,8 @@ static int tc4x_eflash_probe(struct flash_bank *bank)
 		return retval;
 	}
 
-	if (((chipid & UCB_CHIPID_PROD) >> 26) != 13) {
+	uint32_t prod = (chipid & UCB_CHIPID_PROD) >> 26;
+	if (prod != 13 && prod != 9) {
 		LOG_ERROR("CHIPID register does not match tc4x with eFLASH.");
 		return ERROR_FAIL;
 	}

@@ -1597,7 +1597,7 @@ static int tricore_examine_first(struct target *target)
 		LOG_TARGET_ERROR(target, "Invalid CPU_ID value: 0x%08x", CPU_ID);
 		return ERROR_TARGET_INVALID;
 	}
-	if ((CPU_ID & 0xFF) == 0x31) {
+	if ((CPU_ID & 0xFF) == 0x31 || (CPU_ID & 0xFF) == 0x32) {
 		uint32_t tccon;
 		LOG_TARGET_INFO(target, "Tricore version 1.8 found");
 		tricore->version = TRICORE_1_8;
