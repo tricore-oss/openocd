@@ -1604,11 +1604,11 @@ static int tricore_examine_first(struct target *target)
 	if (ret)
 		return ret;
 
-	if ((CPU_ID & 0xFFFF00) != 0xC0C000) {
+	if ((CPU_ID & 0xFFFF00) != 0xC0C000 && (CPU_ID & 0xFFFF00) != 0xB7C000) {
 		LOG_TARGET_ERROR(target, "Invalid CPU_ID value: 0x%08x", CPU_ID);
 		return ERROR_TARGET_INVALID;
 	}
-	if ((CPU_ID & 0xFF) == 0x31 || (CPU_ID & 0xFF) == 0x32) {
+	if ((CPU_ID & 0xFFFF00) == 0xC0C000 && ((CPU_ID & 0xFF) == 0x31 || (CPU_ID & 0xFF) == 0x32)) {
 		uint32_t tccon;
 		LOG_TARGET_INFO(target, "Tricore version 1.8 found");
 		tricore->version = TRICORE_1_8;
@@ -1626,10 +1626,18 @@ static int tricore_examine_first(struct target *target)
 						: (tricore->fpu == TRICORE_FPU_SINGLE) ? "single"
 															   : "none",
 						tricore->virt_enabled ? "yes" : "no");
-	} else if ((CPU_ID & 0xFF) == 0x21) {
+	} else if ((CPU_ID & 0xFFFF00) == 0xC0C000 && (CPU_ID & 0xFF) == 0x21) {
 		tricore->version = TRICORE_1_6_2;
 		tricore->fpu = TRICORE_FPU_SINGLE;
 		LOG_TARGET_INFO(target, "Tricore version 1.6.2P found");
+	} else if ((CPU_ID & 0xFFFF00) == 0xC0C000 && ((CPU_ID & 0xFF) == 0x11 || (CPU_ID & 0xFF) == 0x12)) {
+		tricore->version = TRICORE_1_6;
+		tricore->fpu = TRICORE_FPU_SINGLE;
+		LOG_TARGET_INFO(target, "Tricore version 1.6P found");
+	}  else if ((CPU_ID & 0xFFFF00) == 0xB7C000) {
+		tricore->version = TRICORE_1_6;
+		tricore->fpu = TRICORE_FPU_SINGLE;
+		LOG_TARGET_INFO(target, "Tricore version 1.6E found");
 	} else {
 		LOG_TARGET_ERROR(target, "Unknown Tricore version found, CPU_ID: 0x%08x", CPU_ID);
 		return ERROR_TARGET_INVALID;
