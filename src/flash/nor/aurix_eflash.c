@@ -72,6 +72,8 @@ struct aurix_eflash_bank {
 	bool probed;
 	/** TC4 eflash */
 	bool tc4x;
+	/** Seucre sequencer */
+	bool secure;
 	/** Fallback mode for flash write */
 	bool fallback_mode;
 	/** UCB access is unlocked */
@@ -97,6 +99,7 @@ struct aurix_eflash_bank_info {
 	uint32_t size;
 	uint32_t phys_sector_size;
 	uint8_t busy_bit;
+	bool secure;
 };
 
 static const struct aurix_eflash_bank_info *aurix_eflash_lookup_bank_info(const struct aurix_eflash_bank_info *layout,
@@ -150,47 +153,47 @@ static int tc3x_eflash_set_bank(struct flash_bank *bank, struct aurix_eflash_ban
 		uint32_t chipid)
 {
 	static const struct aurix_eflash_bank_info tc36x_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 2 * 1024 * 1024, 1024 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80300000, 2 * 1024 * 1024, 1024 * 1024, 3},
-		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0},
-		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0},
-		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 2 * 1024 * 1024, 1024 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80300000, 2 * 1024 * 1024, 1024 * 1024, 3, false},
+		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0, false},
+		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0, false},
+		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1, true},
 	};
 	static const struct aurix_eflash_bank_info tc37x_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3},
-		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0},
-		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0},
-		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3, false},
+		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0, false},
+		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0, false},
+		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1, true},
 	};
 	static const struct aurix_eflash_bank_info tc38x_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3},
-		{AURIX_EFLASH_PFLASH, 0x80600000, 3 * 1024 * 1024, 1024 * 1024, 4},
-		{AURIX_EFLASH_PFLASH, 0x80900000, 1 * 1024 * 1024, 1024 * 1024, 5},
-		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0},
-		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0},
-		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3, false},
+		{AURIX_EFLASH_PFLASH, 0x80600000, 3 * 1024 * 1024, 1024 * 1024, 4, false},
+		{AURIX_EFLASH_PFLASH, 0x80900000, 1 * 1024 * 1024, 1024 * 1024, 5, false},
+		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0, false},
+		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0, false},
+		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1, true},
 	};
 	static const struct aurix_eflash_bank_info tc39x_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3},
-		{AURIX_EFLASH_PFLASH, 0x80600000, 3 * 1024 * 1024, 1024 * 1024, 4},
-		{AURIX_EFLASH_PFLASH, 0x80900000, 3 * 1024 * 1024, 1024 * 1024, 5},
-		{AURIX_EFLASH_PFLASH, 0x80C00000, 3 * 1024 * 1024, 1024 * 1024, 6},
-		{AURIX_EFLASH_PFLASH, 0x80F00000, 1 * 1024 * 1024, 1024 * 1024, 7},
-		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0},
-		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0},
-		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3, false},
+		{AURIX_EFLASH_PFLASH, 0x80600000, 3 * 1024 * 1024, 1024 * 1024, 4, false},
+		{AURIX_EFLASH_PFLASH, 0x80900000, 3 * 1024 * 1024, 1024 * 1024, 5, false},
+		{AURIX_EFLASH_PFLASH, 0x80C00000, 3 * 1024 * 1024, 1024 * 1024, 6, false},
+		{AURIX_EFLASH_PFLASH, 0x80F00000, 1 * 1024 * 1024, 1024 * 1024, 7, false},
+		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0, false},
+		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0, false},
+		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1, true},
 	};
 	static const struct aurix_eflash_bank_info tc3ex_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3},
-		{AURIX_EFLASH_PFLASH, 0x80600000, 3 * 1024 * 1024, 1024 * 1024, 4},
-		{AURIX_EFLASH_PFLASH, 0x80900000, 3 * 1024 * 1024, 1024 * 1024, 5},
-		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0},
-		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0},
-		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 3 * 1024 * 1024, 1024 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80300000, 3 * 1024 * 1024, 1024 * 1024, 3, false},
+		{AURIX_EFLASH_PFLASH, 0x80600000, 3 * 1024 * 1024, 1024 * 1024, 4, false},
+		{AURIX_EFLASH_PFLASH, 0x80900000, 3 * 1024 * 1024, 1024 * 1024, 5, false},
+		{AURIX_EFLASH_DFLASH, 0xAF000000, 1 * 1024 * 1024, 1 * 1024 * 1024, 0, false},
+		{AURIX_EFLASH_UCB, 0xAF400000, 24 * 1024, 24 * 1024, 0, false},
+		{AURIX_EFLASH_DFLASH, 0xAFC00000, 128 * 1024, 128 * 1024, 1, true},
 	};
 
 	const uint32_t chipid_variant = (chipid & SCU_CHIPID_CHID) >> 12;
@@ -228,8 +231,9 @@ static int tc3x_eflash_set_bank(struct flash_bank *bank, struct aurix_eflash_ban
 	aurix_load_tc3x_type_params(aurix_bank);
 	aurix_bank->params.phys_sector_size = bank_info->phys_sector_size;
 	aurix_bank->params.busy_bit = bank_info->busy_bit;
+	aurix_bank->secure = bank_info->secure;
 
-	if (bank->base == 0xAF000000) {
+	if (bank->base == 0xAFC00000) {
 		aurix_bank->fsi_addr = 0xF8030000;
 		aurix_bank->reg_addr = 0xF8060000;
 		aurix_bank->cmd_addr = 0xAFC00000;
@@ -286,40 +290,40 @@ static int tc4x_eflash_set_bank(struct flash_bank *bank, struct aurix_eflash_ban
 		uint32_t chipid)
 {
 	static const struct aurix_eflash_bank_info tc4dx_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 2 * 1024 * 1024, 512 * 1024, 0},
-		{AURIX_EFLASH_PFLASH, 0x80200000, 2 * 1024 * 1024, 512 * 1024, 1},
-		{AURIX_EFLASH_PFLASH, 0x80400000, 2 * 1024 * 1024, 512 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80600000, 2 * 1024 * 1024, 512 * 1024, 3},
-		{AURIX_EFLASH_PFLASH, 0x80800000, 1 * 1024 * 1024, 512 * 1024, 4},
-		{AURIX_EFLASH_PFLASH, 0x80900000, 1 * 1024 * 1024, 512 * 1024, 5},
-		{AURIX_EFLASH_PFLASH, 0x80A00000, 2 * 1024 * 1024, 512 * 1024, 6},
-		{AURIX_EFLASH_PFLASH, 0x80C00000, 2 * 1024 * 1024, 512 * 1024, 7},
-		{AURIX_EFLASH_PFLASH, 0x80E00000, 2 * 1024 * 1024, 512 * 1024, 8},
-		{AURIX_EFLASH_PFLASH, 0x81000000, 2 * 1024 * 1024, 512 * 1024, 9},
-		{AURIX_EFLASH_PFLASH, 0x81200000, 1 * 1024 * 1024, 512 * 1024, 10},
-		{AURIX_EFLASH_PFLASH, 0x81300000, 1 * 1024 * 1024, 512 * 1024, 11},
-		{AURIX_EFLASH_PFLASH, 0x84000000, 1 * 1024 * 1024, 512 * 1024, 18},
-		{AURIX_EFLASH_DFLASH, 0xAE000000, 1024 * 1024, 128 * 1024, 16},
-		{AURIX_EFLASH_UCB, 0xAE400000, 80 * 1024, 80 * 1024, 16},
-		{AURIX_EFLASH_DFLASH, 0xAE800000, 128 * 1024, 64, 17},
-		{AURIX_EFLASH_UCB, 0xAEC00000, 52 * 1024, 52 * 1024, 17},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 2 * 1024 * 1024, 512 * 1024, 0, false},
+		{AURIX_EFLASH_PFLASH, 0x80200000, 2 * 1024 * 1024, 512 * 1024, 1, false},
+		{AURIX_EFLASH_PFLASH, 0x80400000, 2 * 1024 * 1024, 512 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80600000, 2 * 1024 * 1024, 512 * 1024, 3, false},
+		{AURIX_EFLASH_PFLASH, 0x80800000, 1 * 1024 * 1024, 512 * 1024, 4, false},
+		{AURIX_EFLASH_PFLASH, 0x80900000, 1 * 1024 * 1024, 512 * 1024, 5, false},
+		{AURIX_EFLASH_PFLASH, 0x80A00000, 2 * 1024 * 1024, 512 * 1024, 6, false},
+		{AURIX_EFLASH_PFLASH, 0x80C00000, 2 * 1024 * 1024, 512 * 1024, 7, false},
+		{AURIX_EFLASH_PFLASH, 0x80E00000, 2 * 1024 * 1024, 512 * 1024, 8, false},
+		{AURIX_EFLASH_PFLASH, 0x81000000, 2 * 1024 * 1024, 512 * 1024, 9, false},
+		{AURIX_EFLASH_PFLASH, 0x81200000, 1 * 1024 * 1024, 512 * 1024, 10, false},
+		{AURIX_EFLASH_PFLASH, 0x81300000, 1 * 1024 * 1024, 512 * 1024, 11, false},
+		{AURIX_EFLASH_PFLASH, 0x84000000, 1 * 1024 * 1024, 512 * 1024, 18, true},
+		{AURIX_EFLASH_DFLASH, 0xAE000000, 1024 * 1024, 128 * 1024, 16, false},
+		{AURIX_EFLASH_UCB, 0xAE400000, 80 * 1024, 80 * 1024, 16, false},
+		{AURIX_EFLASH_DFLASH, 0xAE800000, 128 * 1024, 64, 17, true},
+		{AURIX_EFLASH_UCB, 0xAEC00000, 52 * 1024, 52 * 1024, 17, true},
 	};
 	static const struct aurix_eflash_bank_info tc49x_layout[] = {
-		{AURIX_EFLASH_PFLASH, 0x80000000, 2 * 1024 * 1024, 512 * 1024, 0},
-		{AURIX_EFLASH_PFLASH, 0x80200000, 2 * 1024 * 1024, 512 * 1024, 1},
-		{AURIX_EFLASH_PFLASH, 0x80400000, 2 * 1024 * 1024, 512 * 1024, 2},
-		{AURIX_EFLASH_PFLASH, 0x80600000, 2 * 1024 * 1024, 512 * 1024, 3},
-		{AURIX_EFLASH_PFLASH, 0x80800000, 2 * 1024 * 1024, 512 * 1024, 4},
-		{AURIX_EFLASH_PFLASH, 0x80A00000, 2 * 1024 * 1024, 512 * 1024, 5},
-		{AURIX_EFLASH_PFLASH, 0x80C00000, 2 * 1024 * 1024, 512 * 1024, 6},
-		{AURIX_EFLASH_PFLASH, 0x80E00000, 2 * 1024 * 1024, 512 * 1024, 7},
-		{AURIX_EFLASH_PFLASH, 0x81000000, 2 * 1024 * 1024, 512 * 1024, 8},
-		{AURIX_EFLASH_PFLASH, 0x81200000, 2 * 1024 * 1024, 512 * 1024, 9},
-		{AURIX_EFLASH_PFLASH, 0x84000000, 1 * 1024 * 1024, 512 * 1024, 10},
-		{AURIX_EFLASH_DFLASH, 0xAE000000, 1024 * 1024, 128 * 1024, 16},
-		{AURIX_EFLASH_UCB, 0xAE400000, 80 * 1024, 80 * 1024, 16},
-		{AURIX_EFLASH_DFLASH, 0xAE800000, 128 * 1024, 64, 17},
-		{AURIX_EFLASH_UCB, 0xAEC00000, 52 * 1024, 52 * 1024, 17},
+		{AURIX_EFLASH_PFLASH, 0x80000000, 2 * 1024 * 1024, 512 * 1024, 0, false},
+		{AURIX_EFLASH_PFLASH, 0x80200000, 2 * 1024 * 1024, 512 * 1024, 1, false},
+		{AURIX_EFLASH_PFLASH, 0x80400000, 2 * 1024 * 1024, 512 * 1024, 2, false},
+		{AURIX_EFLASH_PFLASH, 0x80600000, 2 * 1024 * 1024, 512 * 1024, 3, false},
+		{AURIX_EFLASH_PFLASH, 0x80800000, 2 * 1024 * 1024, 512 * 1024, 4, false},
+		{AURIX_EFLASH_PFLASH, 0x80A00000, 2 * 1024 * 1024, 512 * 1024, 5, false},
+		{AURIX_EFLASH_PFLASH, 0x80C00000, 2 * 1024 * 1024, 512 * 1024, 6, false},
+		{AURIX_EFLASH_PFLASH, 0x80E00000, 2 * 1024 * 1024, 512 * 1024, 7, false},
+		{AURIX_EFLASH_PFLASH, 0x81000000, 2 * 1024 * 1024, 512 * 1024, 8, false},
+		{AURIX_EFLASH_PFLASH, 0x81200000, 2 * 1024 * 1024, 512 * 1024, 9, false},
+		{AURIX_EFLASH_PFLASH, 0x84000000, 1 * 1024 * 1024, 512 * 1024, 10, true},
+		{AURIX_EFLASH_DFLASH, 0xAE000000, 1024 * 1024, 128 * 1024, 16, false},
+		{AURIX_EFLASH_UCB, 0xAE400000, 80 * 1024, 80 * 1024, 16, false},
+		{AURIX_EFLASH_DFLASH, 0xAE800000, 128 * 1024, 64, 17, true},
+		{AURIX_EFLASH_UCB, 0xAEC00000, 52 * 1024, 52 * 1024, 17, true},
 	};
 
 	const uint32_t prod = (chipid & UCB_CHIPID_PROD) >> 26;
@@ -347,6 +351,7 @@ static int tc4x_eflash_set_bank(struct flash_bank *bank, struct aurix_eflash_ban
 	aurix_load_tc4x_type_params(aurix_bank);
 	aurix_bank->params.phys_sector_size = bank_info->phys_sector_size;
 	aurix_bank->params.busy_bit = bank_info->busy_bit;
+	aurix_bank->secure = bank_info->secure;
 
 	/* Select the command sequence interface based on bank addresses */
 	if (bank->base == 0x84000000 || bank->base == 0xAE800000 || bank->base == 0xAEC00000) {
@@ -888,29 +893,114 @@ sequence_err2:
 	return ERROR_OK;
 }
 
-static const uint8_t tc4x_flash_write_code[] = {
-#include "../../../contrib/loaders/flash/aurix/tc4x-program.inc"
-};
+static int aurix_eflash_get_code(struct aurix_eflash_bank *aurix_bank, const uint8_t **write_code, size_t *write_code_size) {
+	static const uint8_t tc4x_pflash_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc4x-pflash-program.inc"
+	};
 
-static const uint8_t tc3x_flash_write_code[] = {
-#include "../../../contrib/loaders/flash/aurix/tc3x-program.inc"
-};
+	static const uint8_t tc4x_dflash_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc4x-dflash-program.inc"
+	};
+
+	static const uint8_t tc4x_pflashcs_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc4x-pflashcs-program.inc"
+	};
+
+	static const uint8_t tc4x_dflashcs_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc4x-dflashcs-program.inc"
+	};
+
+	static const uint8_t tc3x_pflash_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc3x-pflash-program.inc"
+	};
+
+	static const uint8_t tc3x_dflash_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc3x-dflash-program.inc"
+	};
+
+	static const uint8_t tc3x_dflash1_write_code[] = {
+	#include "../../../contrib/loaders/flash/aurix/tc3x-dflash1-program.inc"
+	};
+
+	if (aurix_bank->tc4x) {
+		if (aurix_bank->secure) {
+			switch (aurix_bank->type) {
+				case AURIX_EFLASH_PFLASH:
+					*write_code = tc4x_pflashcs_write_code;
+					*write_code_size = sizeof(tc4x_pflashcs_write_code);
+					break;
+				case AURIX_EFLASH_DFLASH:
+				case AURIX_EFLASH_UCB:
+					*write_code = tc4x_dflashcs_write_code;
+					*write_code_size = sizeof(tc4x_dflashcs_write_code);
+					break;
+				default:
+					return ERROR_FLASH_BANK_INVALID;
+			}
+		} else {
+			switch (aurix_bank->type) {
+				case AURIX_EFLASH_PFLASH:
+					*write_code = tc4x_pflash_write_code;
+					*write_code_size = sizeof(tc4x_pflash_write_code);
+					break;
+				case AURIX_EFLASH_DFLASH:
+				case AURIX_EFLASH_UCB:
+					*write_code = tc4x_dflash_write_code;
+					*write_code_size = sizeof(tc4x_dflash_write_code);
+					break;
+				default:
+					return ERROR_FLASH_BANK_INVALID;
+			}
+		}
+
+	} else {
+		if (aurix_bank->secure) {
+			switch(aurix_bank->type) {
+				case AURIX_EFLASH_DFLASH:
+					*write_code = tc3x_dflash1_write_code;
+					*write_code_size = sizeof(tc3x_dflash1_write_code);
+					break;
+				default:
+					return ERROR_FLASH_BANK_INVALID;
+			}
+		} else {
+			switch (aurix_bank->type) {
+				case AURIX_EFLASH_PFLASH:
+					*write_code = tc3x_pflash_write_code;
+					*write_code_size = sizeof(tc3x_pflash_write_code);
+					break;
+				case AURIX_EFLASH_DFLASH:
+				case AURIX_EFLASH_UCB:
+					*write_code = tc3x_dflash_write_code;
+					*write_code_size = sizeof(tc3x_dflash_write_code);
+					break;
+				default:
+					return ERROR_FLASH_BANK_INVALID;
+			}
+		}
+	}
+
+	return 0;
+}
 
 /* Start a low level flash write for the specified region */
 static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, const uint8_t *buffer, uint32_t bytes)
 {
 	struct aurix_eflash_bank *aurix_bank = bank->driver_priv;
 	struct target *target = bank->target;
+	struct working_area *source;
 	struct reg_param reg_params[5];
+	const uint8_t *write_code;
+	size_t write_code_size;
+	const uint32_t nvmaddr = (address & ~0xF0000000u) | 0xA0000000u;
 	uint32_t buffer_size = 0x8000;
 	int ret;
-	struct working_area *source;
 
-	if (aurix_bank->tc4x) {
-		ret = target_write_buffer(target, 0x70100000, sizeof(tc4x_flash_write_code), tc4x_flash_write_code);
-	} else {
-		ret = target_write_buffer(target, 0x70100000, sizeof(tc3x_flash_write_code), tc3x_flash_write_code);
-	}
+	ret = aurix_eflash_get_code(aurix_bank, &write_code, &write_code_size);
+	if (ret != ERROR_OK)
+		return ret;
+
+	ret = target_write_buffer(target, 0x70100000, write_code_size, write_code);
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -933,7 +1023,7 @@ static int aurix_eflash_write_algo(struct flash_bank *bank, uint32_t address, co
 
 	buf_set_u32(reg_params[0].value, 0, 32, (uint32_t)source->address);
 	buf_set_u32(reg_params[1].value, 0, 32, source->size);
-	buf_set_u32(reg_params[2].value, 0, 32, address);
+	buf_set_u32(reg_params[2].value, 0, 32, nvmaddr);
 	buf_set_u32(reg_params[3].value, 0, 32, bytes);
 
 	ret = target_run_flash_async_algorithm(target, buffer, bytes / 8, 8, 0, NULL, ARRAY_SIZE(reg_params), reg_params,
@@ -1109,6 +1199,7 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 	tc3x_bank->ucb_unlocked = false;
 	tc3x_bank->fallback_mode = false;
 	tc3x_bank->tc4x = false;
+	tc3x_bank->secure = false;
 	tc3x_bank->probed = false;
 	bank->driver_priv = tc3x_bank;
 
@@ -1127,6 +1218,7 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	tc4x_bank->ucb_unlocked = false;
 	tc4x_bank->fallback_mode = false;
 	tc4x_bank->tc4x = true;
+	tc4x_bank->secure = false;
 	tc4x_bank->probed = false;
 	bank->driver_priv = tc4x_bank;
 
