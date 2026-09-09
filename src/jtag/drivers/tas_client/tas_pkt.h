@@ -161,6 +161,50 @@ typedef enum {
 
 } tas_pl_err_et;
 
+/*! \brief Convert a TAS packet error code to a brief description. */
+/*! \ingroup Protocol_Definition */
+static inline const char *tas_pl_err_to_str(uint8_t err)
+{
+	switch (err) {
+	case TAS_PL_ERR_NO_ERROR:
+		return "No error";
+	case TAS_PL_ERR_PARAM:
+		return "Wrong parameter value";
+	case TAS_PL_ERR_NOT_SUPPORTED:
+		return "Command or parameter not supported";
+	case TAS_PL_ERR_USAGE:
+		return "Command used incorrectly";
+	case TAS_PL_ERR_PROTOCOL:
+		return "Packet layer protocol error";
+	case TAS_PL0_ERR_NO_ERROR:
+		return "No error";
+	case TAS_PL1_ERR_CMD_FAILED:
+		return "Command failed";
+	case TAS_PL1_ERR_SERVER_LOCKED:
+		return "Server is locked";
+	case TAS_PL1_ERR_SESSION:
+		return "Session name or password mismatch";
+	case TAS_PL1_ERR_DEV_RESET:
+		return "Device reset detected";
+	case TAS_PL1_ERR_DEV_LOCKED:
+		return "Device is locked";
+	case TAS_PL1_ERR_DEV_ACCESS:
+		return "Device access error";
+	case TAS_PL0_ERR_ACC_MODE:
+		return "Access mode not supported";
+	case TAS_PL0_ERR_ADDR_MAP:
+		return "Address map not supported";
+	case TAS_PL0_ERR_ADDR_BLOCKED:
+		return "Address blocked by protection";
+	case TAS_PL0_ERR_DATA:
+		return "Read/write access was not completely successful";
+	case TAS_PL0_ERR_CONSEQUENTIAL:
+		return "Consequential error after a previous PL0 failure";
+	default:
+		return "Unknown TAS packet error";
+	}
+}
+
 /*! \brief TAS packet command description */
 /*! \details Commands are partitioned into two levels. PL1 and PL0. */
 /*! PL1 packets are considered higher level commands most of which are used between a client and a

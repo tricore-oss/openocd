@@ -421,7 +421,7 @@ int tas_client_execute_mem_req(struct tas_client *client, uint8_t addr_map, stru
 	tas_pl0rq_wrblk_st pl0rq_write;
 
 	tas_pl1rsp_pl0_start_st rsp_start;
-	tas_pl0rsp_rd_st rsp_rd;
+	tas_pl0rsp_rd_st rsp_pl0;
 	uint32_t words = (mem_req->length + 3) / 4;
 
 	if (mem_req->is_read) {
@@ -486,22 +486,39 @@ int tas_client_execute_mem_req(struct tas_client *client, uint8_t addr_map, stru
 	err = recv_exact(client->sock, rx_buf, packet_size - 4);
 	if (err != (int)packet_size - 4)
 		return ERROR_FAIL;
-	if (packet_size > rx_size) {
-		LOG_DEBUG("Response packet size %u exceeds expected size %zu", packet_size, rx_size);
+	if (packet_size != rx_size) {
+		LOG_DEBUG("Response packet size %u does not match expected size %zu", packet_size, rx_size);
 		return ERROR_FAIL;
 	}
 
 	memcpy(&rsp_start, rx_buf, sizeof(rsp_start));
 	rx_offset += sizeof(rsp_start);
-	if (rsp_start.err != TAS_PL_ERR_NO_ERROR)
+	if (rsp_start.err != TAS_PL_ERR_NO_ERROR) {
+		LOG_ERROR("TAS PL1 error: %s", tas_pl_err_to_str(rsp_start.err));
 		return ERROR_FAIL;
+	}
 
+	memcpy(&rsp_pl0, rx_buf + rx_offset, sizeof(rsp_pl0));
+	if (rsp_pl0.err != TAS_PL0_ERR_NO_ERROR) {
+		LOG_ERROR("TAS PL0 mem request failed: %s (addr=0x%08" PRIx32 " len=%zu)",
+				tas_pl_err_to_str(rsp_pl0.err), mem_req->addr, mem_req->length);
+		return ERROR_FAIL;
+	}
+	rx_offset += sizeof(rsp_pl0);
+	
 	if (mem_req->is_read) {
-		memcpy(&rsp_rd, rx_buf + rx_offset, sizeof(rsp_rd));
-		rx_offset += sizeof(rsp_rd);
-		if (rsp_rd.cmd != pl0rq_read.cmd)
+		if (rsp_pl0.cmd != pl0rq_read.cmd) {
+			LOG_DEBUG("TAS PL0 command mismatch: expected_cmd=0x%02x rsp_cmd=0x%02x",
+					pl0rq_read.cmd, rsp_pl0.cmd);
 			return ERROR_FAIL;
+		}
 		memcpy(mem_req->buffer, rx_buf + rx_offset, mem_req->length);
+	} else {
+		if (rsp_pl0.cmd != pl0rq_write.cmd) {
+			LOG_DEBUG("TAS PL0 command mismatch: expected_cmd=0x%02x rsp_cmd=0x%02x",
+					pl0rq_write.cmd, rsp_pl0.cmd);
+			return ERROR_FAIL;
+		}
 	}
 
 	return ERROR_OK;
@@ -621,8 +638,7 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 				}
 			}
 
-			if (rq_end.num_pl0_rw == 0)
-				return ERROR_FAIL;
+			assert(rq_end.num_pl0_rw != 0);
 
 			memcpy(tx_buffer + tx_offset, &rq_end, sizeof(rq_end));
 			tx_offset += sizeof(rq_end);
@@ -673,30 +689,38 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 				break;
 			}
 		}
-		if (slot == TAS_OUTSTANDING_MAX)
-			return ERROR_FAIL;
-		if (recv_len > outstanding[slot].expected_rx_size) {
-			LOG_DEBUG("Unxpected response size %zu != %d", outstanding[slot].expected_rx_size, recv_len);
+		if (slot == TAS_OUTSTANDING_MAX) {
+			LOG_DEBUG("TAS response pl1_cnt unmatched in mem batch: rsp_end.pl1_cnt=0x%04x", rsp_end.pl1_cnt);
 			return ERROR_FAIL;
 		}
-		if (rsp_start.err != TAS_PL_ERR_NO_ERROR)
+		if (recv_len > outstanding[slot].expected_rx_size) {
+			LOG_DEBUG("TAS unexpected response size %zu != %d", outstanding[slot].expected_rx_size, recv_len);
 			return ERROR_FAIL;
-		if (rsp_end.pl1_cnt != outstanding[slot].pl1_cnt)
+		}
+		if (rsp_start.err != TAS_PL_ERR_NO_ERROR) {
+			LOG_ERROR("TAS PL1 error: %s ", tas_pl_err_to_str(rsp_start.err));
 			return ERROR_FAIL;
+		}
 
+		bool pl0_error = false;
 		for (size_t i = outstanding[slot].start_mem_req; i < outstanding[slot].end_mem_req; i++) {
 			tas_pl0rsp_st rsp_pl0;
 			memcpy(&rsp_pl0, rx_buffer + rx_offset, sizeof(rsp_pl0));
 			rx_offset += sizeof(rsp_pl0);
 			if (rsp_pl0.err != TAS_PL0_ERR_NO_ERROR) {
-				LOG_DEBUG("Memory request failed at address 0x%08X with error code %x", mem_reqs[i].addr, rsp_pl0.err);
-				return ERROR_FAIL;
-			}
-			if (mem_reqs[i].is_read) {
-				memcpy(mem_reqs[i].buffer, rx_buffer + rx_offset, mem_reqs[i].length);
-				rx_offset += mem_reqs[i].length;
+				LOG_ERROR("TAS PL0 mem request failed: %s (addr=0x%08" PRIx32 " len=%zu is_read=%u)",
+						tas_pl_err_to_str(rsp_pl0.err), mem_reqs[i].addr, mem_reqs[i].length, 
+						mem_reqs[i].is_read ? 1 : 0);
+				pl0_error = true;
+			} else {
+				if (mem_reqs[i].is_read) {
+					memcpy(mem_reqs[i].buffer, rx_buffer + rx_offset, mem_reqs[i].length);
+					rx_offset += mem_reqs[i].length;
+				}
 			}
 		}
+		if (pl0_error)
+			return ERROR_FAIL;
 
 		outstanding[slot].in_use = false;
 		outstanding_num--;
