@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/param.h>
 #include <time.h>
 #include <unistd.h>
@@ -17,6 +18,9 @@
 #endif
 #ifdef HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
+#endif
+#ifndef __WIN32__
+#include <sys/time.h>
 #endif
 #ifdef __WIN32__
 #include <winsock2.h>
@@ -39,6 +43,8 @@
 #endif
 
 #define TAS_OUTSTANDING_MAX 8
+#define TAS_RECV_TIMEOUT_MS 500
+#define TAS_RECV_TIMEOUT_MS_MAX 5000
 
 struct tas_outstanding_pkt {
 	bool in_use;
@@ -47,6 +53,63 @@ struct tas_outstanding_pkt {
 	size_t end_mem_req;
 	size_t expected_rx_size;
 };
+
+static int recv_exact(int sock, void *buffer, size_t length) {
+	uint8_t *cursor = buffer;
+	size_t received = 0;
+	uint32_t timeout = 0;
+
+	while (received < length) {
+		/* Execute keep alive before waiting for new data */
+		keep_alive();
+
+		int ret = recv(sock, (char *)(cursor + received), length - received, 0);
+		if (ret == 0)
+			return ret;
+		if (ret < 0) {
+#ifdef __WIN32__
+			int wsa_err = WSAGetLastError();
+			if (wsa_err == WSAETIMEDOUT || wsa_err == WSAEWOULDBLOCK || wsa_err == WSAEINTR) {
+				timeout += TAS_RECV_TIMEOUT_MS;
+				if (timeout >= TAS_RECV_TIMEOUT_MS_MAX)
+					return -WSAETIMEDOUT;
+				continue;
+			}
+#else
+			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+				timeout += TAS_RECV_TIMEOUT_MS;
+				if (timeout >= TAS_RECV_TIMEOUT_MS_MAX) {
+					return -EAGAIN;
+				}
+				continue;
+			}
+#endif
+			return ret;
+		}
+		received += ret;
+	}
+
+	return (int)received;
+}
+
+static int tas_client_set_recv_timeout(int sock)
+{
+#ifdef __WIN32__
+	DWORD timeout_ms = TAS_RECV_TIMEOUT_MS;
+	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) != 0)
+		return ERROR_FAIL;
+#else
+	struct timeval timeout = {
+		.tv_sec = 0,
+		.tv_usec = TAS_RECV_TIMEOUT_MS * 1000,
+	};
+
+	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0)
+		return ERROR_FAIL;
+#endif
+
+	return ERROR_OK;
+}
 
 int tas_client_connect(struct tas_client *client, int sock)
 {
@@ -78,11 +141,17 @@ int tas_client_connect(struct tas_client *client, int sock)
 	if (err < 0)
 		return ERROR_FAIL;
 
-	err = recv(sock, (char *)&packet_size, 4, 0);
+	err = tas_client_set_recv_timeout(sock);
+	if (err != ERROR_OK) {
+		LOG_ERROR("Failed to set TAS socket recv timeout to %d ms", TAS_RECV_TIMEOUT_MS);
+		return err;
+	}
+
+	err = recv_exact(sock, &packet_size, 4);
 	if (err != 4 || packet_size != sizeof(tas_pl1rsp_server_connect_st) + 4)
 		return ERROR_FAIL;
-	err = recv(sock, (char *)&rsp_server_connect, sizeof(tas_pl1rsp_server_connect_st), 0);
-	if (err < 0)
+	err = recv_exact(sock, &rsp_server_connect, sizeof(tas_pl1rsp_server_connect_st));
+	if (err != (int)sizeof(tas_pl1rsp_server_connect_st))
 		return ERROR_FAIL;
 
 	if (rsp_server_connect.cmd != TAS_PL1_CMD_SERVER_CONNECT || rsp_server_connect.err != TAS_PL_ERR_NO_ERROR)
@@ -114,9 +183,10 @@ int tas_client_session_start(struct tas_client *client, const char *device)
 	if (send(client->sock, (const char *)tx_buf, packet_size, 0) < 0)
 		return ERROR_FAIL;
 
-	if (recv(client->sock, (char *)&packet_size, 4, 0) != 4)
+	if (recv_exact(client->sock, &packet_size, 4) != 4)
 		return ERROR_FAIL;
-	if (recv(client->sock, (char *)&rsp_session_start, sizeof(tas_pl1rsp_session_start_st), 0) < 0)
+	if (recv_exact(client->sock, &rsp_session_start, sizeof(tas_pl1rsp_session_start_st)) !=
+		(int)sizeof(tas_pl1rsp_session_start_st))
 		return ERROR_FAIL;
 
 	if (rsp_session_start.cmd != TAS_PL1_CMD_SESSION_START || rsp_session_start.con_id != 0 ||
@@ -158,9 +228,10 @@ int tas_client_device_connect(struct tas_client *client, tas_dev_con_feat_et dev
 	if (send(client->sock, (const char *)buf, packet_size, 0) < 0)
 		return ERROR_FAIL;
 
-	if (recv(client->sock, (char *)&packet_size, 4, 0) != 4)
+	if (recv_exact(client->sock, &packet_size, 4) != 4)
 		return ERROR_FAIL;
-	if (recv(client->sock, (char *)&rsp_device_connect, sizeof(tas_pl1rsp_device_connect_st), 0) < 0)
+	if (recv_exact(client->sock, &rsp_device_connect, sizeof(tas_pl1rsp_device_connect_st)) !=
+		(int)sizeof(tas_pl1rsp_device_connect_st))
 		return ERROR_FAIL;
 
 	if (rsp_device_connect.cmd != TAS_PL1_CMD_DEVICE_CONNECT || rsp_device_connect.err != TAS_PL_ERR_NO_ERROR)
@@ -192,9 +263,10 @@ int tas_client_get_targets(struct tas_client *client, tas_target_info_st **targe
 	if (send(client->sock, (const char *)buf, packet_size, 0) < 0)
 		return ERROR_FAIL;
 
-	if (recv(client->sock, (char *)&packet_size, 4, 0) != 4)
+	if (recv_exact(client->sock, &packet_size, 4) != 4)
 		return ERROR_FAIL;
-	if (recv(client->sock, (char *)&rsp_get_targets, sizeof(tas_pl1rsp_get_targets_st), 0) < 0)
+	if (recv_exact(client->sock, &rsp_get_targets, sizeof(tas_pl1rsp_get_targets_st)) !=
+		(int)sizeof(tas_pl1rsp_get_targets_st))
 		return ERROR_FAIL;
 
 	if (rsp_get_targets.cmd != TAS_PL1_CMD_GET_TARGETS || rsp_get_targets.err != TAS_PL_ERR_NO_ERROR)
@@ -208,7 +280,8 @@ int tas_client_get_targets(struct tas_client *client, tas_target_info_st **targe
 		*targets = calloc(*target_num, sizeof(tas_target_info_st));
 		if (!*targets)
 			return ERROR_FAIL;
-		if (recv(client->sock, (char *)*targets, *target_num * sizeof(tas_target_info_st), 0) < 0)
+		if (recv_exact(client->sock, *targets, *target_num * sizeof(tas_target_info_st)) !=
+			(int)(*target_num * sizeof(tas_target_info_st)))
 			return ERROR_FAIL;
 	}
 
@@ -233,9 +306,9 @@ int tas_client_ping(struct tas_client *client, tas_pl1rsp_ping_st *rsp_ping)
 	if (send(client->sock, (const char *)buf, packet_size, 0) < 0)
 		return ERROR_FAIL;
 
-	if (recv(client->sock, (char *)&packet_size, 4, 0) != 4)
+	if (recv_exact(client->sock, &packet_size, 4) != 4)
 		return ERROR_FAIL;
-	if (recv(client->sock, (char *)rsp_ping, sizeof(tas_pl1rsp_ping_st), 0) < 0)
+	if (recv_exact(client->sock, rsp_ping, sizeof(tas_pl1rsp_ping_st)) != (int)sizeof(tas_pl1rsp_ping_st))
 		return ERROR_FAIL;
 
 	if (rsp_ping->cmd != TAS_PL1_CMD_PING || rsp_ping->err != TAS_PL_ERR_NO_ERROR)
@@ -282,14 +355,14 @@ int tas_client_send_pl0(struct tas_client *client, uint8_t con_id, uint8_t *tx_b
 	if (send(client->sock, (const char *)tx_buffer, tx_len, 0) < 0)
 		return ERROR_FAIL;
 
-	if (recv(client->sock, (char *)rx_buffer, 4, 0) != 4)
+	if (recv_exact(client->sock, rx_buffer, 4) != 4)
 		return ERROR_FAIL;
 	memcpy(&packet_size, rx_buffer, 4);
 	if (packet_size > *rx_len)
 		return ERROR_FAIL;
 	*rx_len = packet_size;
 
-	if (recv(client->sock, (char *)(rx_buffer + 4), packet_size - 4, 0) < 0)
+	if (recv_exact(client->sock, rx_buffer + 4, packet_size - 4) != (int)(packet_size - 4))
 		return ERROR_FAIL;
 	memcpy(&rsp_start, rx_buffer + 4, sizeof(tas_pl1rsp_pl0_start_st));
 	memcpy(&rsp_end, rx_buffer + packet_size - sizeof(tas_pl1rsp_pl0_start_st), sizeof(tas_pl1rsp_pl0_end_st));
@@ -402,7 +475,7 @@ int tas_client_execute_mem_req(struct tas_client *client, uint8_t addr_map, stru
 	if (err < 0)
 		return ERROR_FAIL;
 
-	err = recv(client->sock, (char *)&packet_size, 4, 0);
+	err = recv_exact(client->sock, &packet_size, 4);
 	if (err != 4)
 		return ERROR_FAIL;
 	if (packet_size > client->max_pl2rsp_pkt_size) {
@@ -410,7 +483,7 @@ int tas_client_execute_mem_req(struct tas_client *client, uint8_t addr_map, stru
 				  client->max_pl2rsp_pkt_size);
 		return ERROR_FAIL;
 	}
-	err = recv(client->sock, (char *)rx_buf, packet_size - 4, 0);
+	err = recv_exact(client->sock, rx_buf, packet_size - 4);
 	if (err != (int)packet_size - 4)
 		return ERROR_FAIL;
 	if (packet_size > rx_size) {
@@ -573,14 +646,14 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 			return ERROR_FAIL;
 
 		uint32_t recv_len;
-		err = recv(client->sock, (char *)&recv_len, 4, 0);
+		err = recv_exact(client->sock, &recv_len, 4);
 		if (err != 4)
 			return ERROR_FAIL;
 		if (recv_len > client->max_pl2rsp_pkt_size) {
-			LOG_DEBUG("Response size too long %d", recv_len);
+			LOG_DEBUG("TAS response size too long %d", recv_len);
 			return ERROR_FAIL;
 		}
-		err = recv(client->sock, (char *)rx_buffer, recv_len - 4, 0);
+		err = recv_exact(client->sock, rx_buffer, recv_len - 4);
 		if (err != (int)recv_len - 4)
 			return ERROR_FAIL;
 
