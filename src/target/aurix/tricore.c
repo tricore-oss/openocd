@@ -741,7 +741,7 @@ int tricore_read_memory(struct target *target, target_addr_t address, uint32_t s
 			uint32_t chunk_size = chunk_count * size;
 			ret = ocmts_queue_read_block(ocmts, address, buffer, chunk_count);
 			if (ret)
-				return ret;
+				goto err;
 			count -= chunk_count;
 			address += chunk_size;
 			buffer += chunk_size;
@@ -751,12 +751,13 @@ int tricore_read_memory(struct target *target, target_addr_t address, uint32_t s
 			goto err;
 		break;
 	default:
-		LOG_ERROR("Unsupported write size %u", size);
+		LOG_ERROR("Unsupported read size %u", size);
 		return ERROR_FAIL;
 	}
 	return ERROR_OK;
 err:
-	LOG_TARGET_ERROR(target, "Failed to read memory at 0x%08" PRIx64 "[count=%u, size=%u]", address, count, size);
+	LOG_TARGET_ERROR(target, "Failed to read memory at 0x%08" PRIx64 "[count=%u, size=%u]", 
+			address, MIN(count, 256), size);
 	return ret;
 }
 
@@ -771,15 +772,17 @@ int tricore_write_memory(struct target *target, target_addr_t address, uint32_t 
 	case 1:
 	case 2:
 		while (count) {
-			ret = ocmts_queue_io_set_address(ocmts, address);
+			if (size == 1) {
+				uint8_t data = *buffer;
+				ret = ocmts_io_write_u8(ocmts, address, data);
+			}
+			else {
+				uint16_t data;
+				memcpy(&data, buffer, sizeof(data));
+				ret = ocmts_io_write_u16(ocmts, address, data);
+			}
 			if (ret)
-				return ret;
-			if (size == 1)
-				ret = ocmts_queue_io_write_byte(ocmts, buffer);
-			else
-				ret = ocmts_queue_io_write_hword(ocmts, buffer);
-			if (ret)
-				return ret;
+				goto err;
 			count--;
 			address += size;
 			buffer += size;
@@ -790,7 +793,7 @@ int tricore_write_memory(struct target *target, target_addr_t address, uint32_t 
 			uint32_t value = buf_get_u32(buffer, 0, 32);
 			ret = ocmts_io_write_u32(ocmts, address, value);
 			if (ret)
-				return ret;
+				goto err;
 			return ERROR_OK;
 		}
 		while (count) {
@@ -798,18 +801,26 @@ int tricore_write_memory(struct target *target, target_addr_t address, uint32_t 
 			uint32_t chunk_size = chunk_count * size;
 			ret = ocmts_queue_write_block(ocmts, address, buffer, chunk_count);
 			if (ret)
-				return ret;
+				goto err;
 			count -= chunk_size / size;
 			address += chunk_size;
 			buffer += chunk_size;
 		}
-		return ocmts_run(ocmts);
+		ret = ocmts_run(ocmts);
+		if (ret)
+			goto err;
+		break;
 	default:
 		LOG_ERROR("Unsupported write size %u", size);
 		return ERROR_FAIL;
 	}
 
 	return ERROR_OK;
+
+err:
+	LOG_TARGET_ERROR(target, "Failed to write memory at 0x%08" PRIx64 "[count=%u, size=%u]", address, 
+			MIN(count, 256), size);
+	return ret;
 }
 
 static const uint8_t tricore_crc_program[] = {
