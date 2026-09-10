@@ -311,6 +311,7 @@ extern const struct flash_driver str7x_flash;
 extern const struct flash_driver str9x_flash;
 extern const struct flash_driver str9xpec_flash;
 extern const struct flash_driver swm050_flash;
+extern const struct flash_driver tc2x_eflash;
 extern const struct flash_driver tc3x_eflash;
 extern const struct flash_driver tc4x_eflash;
 extern const struct flash_driver tc4x_rram;
