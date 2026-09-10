@@ -918,10 +918,6 @@ static int aurix_eflash_get_code(struct aurix_eflash_bank *aurix_bank, const uin
 	#include "../../../contrib/loaders/flash/aurix/tc3x-dflash-program.inc"
 	};
 
-	static const uint8_t tc3x_dflash1_write_code[] = {
-	#include "../../../contrib/loaders/flash/aurix/tc3x-dflash1-program.inc"
-	};
-
 	if (aurix_bank->tc4x) {
 		if (aurix_bank->secure) {
 			switch (aurix_bank->type) {
@@ -954,29 +950,18 @@ static int aurix_eflash_get_code(struct aurix_eflash_bank *aurix_bank, const uin
 		}
 
 	} else {
-		if (aurix_bank->secure) {
-			switch(aurix_bank->type) {
-				case AURIX_EFLASH_DFLASH:
-					*write_code = tc3x_dflash1_write_code;
-					*write_code_size = sizeof(tc3x_dflash1_write_code);
-					break;
-				default:
-					return ERROR_FLASH_BANK_INVALID;
-			}
-		} else {
-			switch (aurix_bank->type) {
-				case AURIX_EFLASH_PFLASH:
-					*write_code = tc3x_pflash_write_code;
-					*write_code_size = sizeof(tc3x_pflash_write_code);
-					break;
-				case AURIX_EFLASH_DFLASH:
-				case AURIX_EFLASH_UCB:
-					*write_code = tc3x_dflash_write_code;
-					*write_code_size = sizeof(tc3x_dflash_write_code);
-					break;
-				default:
-					return ERROR_FLASH_BANK_INVALID;
-			}
+		switch (aurix_bank->type) {
+			case AURIX_EFLASH_PFLASH:
+				*write_code = tc3x_pflash_write_code;
+				*write_code_size = sizeof(tc3x_pflash_write_code);
+				break;
+			case AURIX_EFLASH_DFLASH:
+			case AURIX_EFLASH_UCB:
+				*write_code = tc3x_dflash_write_code;
+				*write_code_size = sizeof(tc3x_dflash_write_code);
+				break;
+			default:
+				return ERROR_FLASH_BANK_INVALID;
 		}
 	}
 
