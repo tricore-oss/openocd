@@ -195,8 +195,19 @@ static int tas_client_reset(int trst, int srst)
 static int tas_client_op_run(struct ocmts *ocds)
 {
 	int err = ERROR_OK;
-	if (mem_req_num > 0)
+	if (mem_req_num > 0) {
 		err = tas_client_execute_mem_reqs(&tas_client, 0, mem_reqs, mem_req_num);
+		if (LOG_LEVEL_IS(LOG_LVL_DEBUG)) {
+			for (size_t i = 0; i < mem_req_num; i++) {
+				struct tas_client_mem_req *req = &mem_reqs[i];
+				uint32_t data;
+				memcpy(&data, req->buffer, MAX(4, req->length));
+				LOG_DEBUG("TAS PL0 request[%zu]: %s addr=0x%08" PRIx32 
+							" length=%zu data=0x%08" PRIx32,
+							i, req->is_read ? "read" : "write", req->addr, req->length, data);
+			}
+		}	
+	}
 	mem_req_num = 0;
 	if (err)
 		return ERROR_FAIL;
