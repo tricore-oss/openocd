@@ -812,7 +812,7 @@ status_err:
 																	  : 4;
 		uint32_t faltal_mask =
 				aurix_bank->family == AURIX_EFLASH_TC4X   ? ((1 << 8) | (1 << 5))
-				: aurx_bank->family == AURIX_EFLASH_TC2X ? (1 << 11)
+				: aurix_bank->family == AURIX_EFLASH_TC2X ? (1 << 11)
                                                         : (1 << 0);
 		if (verify_error) {
 			if (flash_err & (1 << verify_bit)) {
