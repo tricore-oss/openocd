@@ -36,7 +36,7 @@ struct tricore_private_config {
 
 /* Forward declarations */
 static int tricore_event_set(struct target *target, uint8_t event_id);
-int tricore_set_breakpoint(struct target *target, struct breakpoint *breakpoint, bool restore);
+int tricore_set_breakpoint(struct target *target, struct breakpoint *breakpoint, bool bbm);
 int tricore_unset_breakpoint(struct target *target, struct breakpoint *breakpoint);
 
 static const struct {
