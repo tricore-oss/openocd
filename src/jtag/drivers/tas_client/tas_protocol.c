@@ -583,10 +583,12 @@ int tas_client_execute_mem_reqs(struct tas_client *client, uint8_t addr_map, str
 					mem_reqs[i].length != 8 && mem_reqs[i].length % 4 != 0 && mem_reqs[i].length > 1024)
 					return ERROR_FAIL;
 				uint32_t words = (mem_reqs[i].length + 3) / 4;
-				if (tx_offset + sizeof(tas_pl0rq_base_addr32_st) +
-							(mem_reqs[i].is_read ? sizeof(tas_pl0rq_rd_st) : sizeof(tas_pl0rq_wrblk_st) + words * 4) >
+				if (tx_offset + sizeof(tas_pl1rq_pl0_end_st) + sizeof(tas_pl0rq_base_addr32_st) +
+							(mem_reqs[i].is_read ? sizeof(tas_pl0rq_rd_st)
+												 : sizeof(tas_pl0rq_wrblk_st) + words * 4) >
 						client->max_pl2rq_pkt_size ||
-					rx_size + (mem_reqs[i].is_read ? sizeof(tas_pl0rsp_rd_st) + words * 4 : sizeof(tas_pl0rsp_st)) >
+					rx_size + (mem_reqs[i].is_read ? sizeof(tas_pl0rsp_rd_st) + words * 4
+												   : sizeof(tas_pl0rsp_st)) >
 						client->max_pl2rsp_pkt_size)
 					break;
 
