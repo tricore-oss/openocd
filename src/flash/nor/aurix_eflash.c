@@ -1495,6 +1495,7 @@ FLASH_BANK_COMMAND_HANDLER(tc2x_flash_bank_command)
 	tc2x_bank->secure = false;
 	tc2x_bank->probed = false;
 	bank->driver_priv = tc2x_bank;
+	bank->default_padded_value = 0x0;
 
 	return ERROR_OK;
 }
@@ -1516,7 +1517,7 @@ FLASH_BANK_COMMAND_HANDLER(tc3x_flash_bank_command)
 	tc3x_bank->secure = false;
 	tc3x_bank->probed = false;
 	bank->driver_priv = tc3x_bank;
-
+	bank->default_padded_value = 0x0;
 	return ERROR_OK;
 }
 
@@ -1535,6 +1536,7 @@ FLASH_BANK_COMMAND_HANDLER(tc4x_flash_bank_command)
 	tc4x_bank->secure = false;
 	tc4x_bank->probed = false;
 	bank->driver_priv = tc4x_bank;
+	bank->default_padded_value = 0x0;
 
 	return ERROR_OK;
 }
