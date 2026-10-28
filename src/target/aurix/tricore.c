@@ -1558,6 +1558,17 @@ int tricore_wait_algorithm(struct target *target, int num_mem_params, struct mem
 
 	ret = target_wait_state(target, TARGET_HALTED, timeout_ms);
 	if (ret != ERROR_OK || target->state != TARGET_HALTED) {
+		uint8_t a11_buf[4];
+		uint8_t pc_buf[4];
+		int a11_ret = target_read_memory(target, tricore_get_reg_addr(target, 0xFFAC), 4, 1, a11_buf);
+		int pc_ret = target_read_memory(target, tricore_get_reg_addr(target, 0xFE08), 4, 1, pc_buf);
+		if (a11_ret == ERROR_OK && pc_ret == ERROR_OK) {
+			LOG_TARGET_ERROR(target, "algorithm memory state: a11=0x%08" PRIx32 ", pc=0x%08" PRIx32,
+				buf_get_u32(a11_buf, 0, 32), buf_get_u32(pc_buf, 0, 32));
+		} else {
+			LOG_TARGET_ERROR(target, "Failed to read algorithm memory state: a11=%d, pc=%d", a11_ret, pc_ret);
+		}
+		
 		ret = target_halt(target);
 		if (ret != ERROR_OK)
 			return ret;
@@ -1574,6 +1585,13 @@ int tricore_wait_algorithm(struct target *target, int num_mem_params, struct mem
 
 		uint32_t pc = buf_get_u32(tricore->pc->value, 0, tricore->pc->size);
 		if (pc != exit_point) {
+			struct reg *a11 = register_get_by_name(target->reg_cache, "a11", false);
+			struct reg *d15 = register_get_by_name(target->reg_cache, "d15", false);
+
+			if (a11 && d15 && a11->type->get(a11) == ERROR_OK && d15->type->get(d15) == ERROR_OK)
+				LOG_TARGET_ERROR(target, "algorithm register state: a11=0x%08" PRIx32 ", d15=0x%08" PRIx32,
+					buf_get_u32(a11->value, 0, a11->size), buf_get_u32(d15->value, 0, d15->size));
+			
 			LOG_TARGET_DEBUG(target, "failed algorithm halted at 0x%08" PRIx32 ", expected 0x%08" TARGET_PRIxADDR, pc,
 							 exit_point);
 			retval = ERROR_TARGET_ALGO_EXIT;
