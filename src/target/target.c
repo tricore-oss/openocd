@@ -2525,6 +2525,31 @@ int target_checksum_memory(struct target *target, target_addr_t address, uint32_
 	return retval;
 }
 
+int
+target_checksum_memory_blocks(struct target* target, struct target_memory_checksum_block* blocks,
+							  unsigned int num_blocks)
+{
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
+	if (!blocks && num_blocks > 0)
+		return ERROR_FAIL;
+
+	if (target->type->checksum_memory_blocks)
+		return target->type->checksum_memory_blocks(target, blocks, num_blocks);
+
+	for (unsigned int i = 0; i < num_blocks; i++) {
+		int retval =
+			target_checksum_memory(target, blocks[i].address, blocks[i].size, &blocks[i].crc);
+		if (retval != ERROR_OK)
+			return retval;
+	}
+
+	return ERROR_OK;
+}
+
 int target_blank_check_memory(struct target *target,
 	struct target_memory_check_block *blocks, unsigned int num_blocks,
 	uint8_t erased_value, unsigned int *checked)

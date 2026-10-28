@@ -348,6 +348,12 @@ struct target_memory_check_block {
 	uint32_t result;
 };
 
+struct target_memory_checksum_block {
+	target_addr_t address;
+	uint32_t size;
+	uint32_t crc;
+};
+
 int target_register_commands(struct command_context *cmd_ctx);
 int target_examine(void);
 
@@ -682,6 +688,8 @@ int target_read_buffer(struct target *target,
 		target_addr_t address, uint32_t size, uint8_t *buffer);
 int target_checksum_memory(struct target *target,
 		target_addr_t address, uint32_t size, uint32_t *crc);
+int target_checksum_memory_blocks(struct target *target,
+		struct target_memory_checksum_block *blocks, unsigned int num_blocks);
 int target_blank_check_memory(struct target *target,
 		struct target_memory_check_block *blocks, unsigned int num_blocks,
 		uint8_t erased_value, unsigned int *checked);
