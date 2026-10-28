@@ -1005,6 +1005,310 @@ int flash_write(struct target *target, struct image *image,
 	return flash_write_unlock_verify(target, image, written, erase, false, true, false);
 }
 
+struct flash_program_action {
+	struct flash_bank *bank;
+	unsigned int start_sector;
+	unsigned int end_sector;
+	target_addr_t start_address;
+	uint32_t size;
+	uint8_t *data;
+};
+
+int flash_write_changed_unlock_verify(struct target *target, struct image *image,
+		bool erase, bool unlock, bool verify)
+{
+	struct flash_program_action *actions = NULL;
+	struct imagesection **sections = NULL;
+	uint32_t *expected_crcs = NULL;
+	struct target_memory_checksum_block *checksum_blocks = NULL;
+	size_t action_count = 0;
+	size_t actions_size = 0;
+	int retval = ERROR_OK;
+
+	if (!target || !image || (image->num_sections && !image->sections)
+			|| image->num_sections > INT_MAX) {
+		LOG_ERROR("Invalid target or image for flash update");
+		return ERROR_FAIL;
+	}
+	if (!image->num_sections) {
+		LOG_INFO("No image sections to update");
+		return ERROR_OK;
+	}
+
+	sections = calloc(image->num_sections, sizeof(*sections));
+	if (!sections) {
+		LOG_ERROR("Out of memory for image sections");
+		retval = ERROR_FAIL;
+		goto done;
+	}
+
+	unsigned int section_count = 0;
+	for (unsigned int i = 0; i < image->num_sections; i++) {
+		if (!image->sections[i].size) {
+			LOG_WARNING("empty section %u", i);
+			continue;
+		}
+		sections[section_count++] = &image->sections[i];
+	}
+	if (!section_count) {
+		LOG_INFO("No image sections to update");
+		goto done;
+	}
+	qsort(sections, section_count, sizeof(*sections), compare_section);
+
+	target_addr_t previous_end = 0;
+	for (unsigned int i = 0; i < section_count; i++) {
+		target_addr_t section_end = sections[i]->base_address + sections[i]->size;
+		if (section_end < sections[i]->base_address) {
+			LOG_ERROR("Image section at " TARGET_ADDR_FMT " overflows the address space",
+				sections[i]->base_address);
+			retval = ERROR_FAIL;
+			goto done;
+		}
+		if (i && sections[i]->base_address < previous_end) {
+			LOG_ERROR("Section at " TARGET_ADDR_FMT " overlaps section ending at " TARGET_ADDR_FMT,
+				sections[i]->base_address, previous_end);
+			retval = ERROR_FAIL;
+			goto done;
+		}
+		previous_end = section_end;
+	}
+
+	unsigned int section_idx = 0;
+	uint32_t section_offset = 0;
+	while (section_idx < section_count) {
+		struct imagesection *section = sections[section_idx];
+		target_addr_t address = section->base_address + section_offset;
+		struct flash_bank *bank;
+		retval = get_flash_bank_by_addr(target, address, true, &bank);
+		if (retval != ERROR_OK)
+			goto done;
+
+		target_addr_t bank_end = bank->base + bank->size;
+		if (bank_end <= bank->base || !bank->num_sectors || !bank->sectors) {
+			LOG_ERROR("Invalid flash geometry at " TARGET_ADDR_FMT, bank->base);
+			retval = ERROR_FAIL;
+			goto done;
+		}
+		uint32_t size = MIN(section->size - section_offset, bank_end - address);
+		target_addr_t write_start = flash_write_align_start(bank, address);
+		target_addr_t write_end = flash_write_align_end(bank, address + size - 1) + 1;
+		if (write_start < bank->base || write_end > bank_end || write_start >= write_end) {
+			LOG_ERROR("Aligned flash write at " TARGET_ADDR_FMT " exceeds its bank", address);
+			retval = ERROR_FLASH_DST_BREAKS_ALIGNMENT;
+			goto done;
+		}
+
+		unsigned int start_sector = bank->num_sectors;
+		unsigned int end_sector = bank->num_sectors;
+		for (unsigned int i = 0; i < bank->num_sectors; i++) {
+			target_addr_t sector_start = bank->base + bank->sectors[i].offset;
+			target_addr_t sector_end = sector_start + bank->sectors[i].size;
+			if (sector_start <= write_start && write_start < sector_end)
+				start_sector = i;
+			if (sector_start < write_end && write_end <= sector_end)
+				end_sector = i;
+		}
+		if (start_sector == bank->num_sectors || end_sector == bank->num_sectors
+				|| start_sector > end_sector) {
+			LOG_ERROR("Flash write at " TARGET_ADDR_FMT " is outside the bank's sectors", address);
+			retval = ERROR_FLASH_SECTOR_INVALID;
+			goto done;
+		}
+
+		struct flash_program_action *action = action_count ? &actions[action_count - 1] : NULL;
+		/* Sections sharing an erase sector must be programmed together. */
+		bool merge = action && action->bank == bank
+			&& (start_sector <= action->end_sector
+				|| !flash_write_check_gap(bank, action->start_address + action->size - 1, address));
+		if (!merge) {
+			if (action_count == actions_size) {
+				size_t new_size = actions_size ? actions_size * 2 : 1;
+				if (new_size < actions_size || new_size > SIZE_MAX / sizeof(*actions)) {
+					LOG_ERROR("Too many flash program actions");
+					retval = ERROR_FAIL;
+					goto done;
+				}
+				struct flash_program_action *new_actions =
+					realloc(actions, new_size * sizeof(*actions));
+				if (!new_actions) {
+					LOG_ERROR("Out of memory for flash program actions");
+					retval = ERROR_FAIL;
+					goto done;
+				}
+				actions = new_actions;
+				actions_size = new_size;
+			}
+			action = &actions[action_count++];
+			*action = (struct flash_program_action) {
+				.bank = bank,
+				.start_sector = start_sector,
+				.end_sector = end_sector,
+				.start_address = write_start,
+			};
+		}
+
+		uint32_t action_size = MAX(action->size, write_end - action->start_address);
+		if (action_size > action->size) {
+			uint8_t *data = realloc(action->data, action_size);
+			if (!data) {
+				LOG_ERROR("Out of memory for flash program action data");
+				retval = ERROR_FAIL;
+				goto done;
+			}
+			memset(data + action->size, bank->default_padded_value, action_size - action->size);
+			action->data = data;
+			action->size = action_size;
+		}
+		action->end_sector = MAX(action->end_sector, end_sector);
+
+		size_t size_read;
+		int section_num = section - image->sections;
+		retval = image_read_section(image, section_num, section_offset, size,
+			action->data + (address - action->start_address), &size_read);
+		if (retval != ERROR_OK)
+			goto done;
+		if (size_read != size) {
+			LOG_ERROR("Short read of image section %d: expected %" PRIu32 " bytes, got %zu",
+				section_num, size, size_read);
+			retval = ERROR_FAIL;
+			goto done;
+		}
+
+		section_offset += size;
+		if (section_offset == section->size) {
+			section_idx++;
+			section_offset = 0;
+		}
+	}
+
+	unsigned int sector_num = 0;
+	for (size_t i = 0; i < action_count; i++) {
+		unsigned int count = actions[i].end_sector - actions[i].start_sector + 1;
+		if (count > UINT_MAX - sector_num) {
+			LOG_ERROR("Too many flash sectors to checksum");
+			retval = ERROR_FAIL;
+			goto done;
+		}
+		sector_num += count;
+	}
+
+	expected_crcs = calloc(sector_num, sizeof(*expected_crcs));
+	checksum_blocks = calloc(sector_num, sizeof(*checksum_blocks));
+	if (!expected_crcs || !checksum_blocks) {
+		LOG_ERROR("Out of memory for flash sector checksums");
+		retval = ERROR_FAIL;
+		goto done;
+	}
+
+	size_t checksum_num = 0;
+	for (size_t action_num = 0; action_num < action_count; action_num++) {
+		struct flash_program_action *action = &actions[action_num];
+
+		for (unsigned int sector_idx = action->start_sector; sector_idx <= action->end_sector;
+				sector_idx++) {
+			struct flash_sector *sector = &action->bank->sectors[sector_idx];
+			target_addr_t sector_start = action->bank->base + sector->offset;
+			target_addr_t sector_end = sector_start + sector->size;
+			target_addr_t action_end = action->start_address + action->size;
+			target_addr_t checksum_start = MAX(sector_start, action->start_address);
+			target_addr_t checksum_end = MIN(sector_end, action_end);
+
+			retval = image_calculate_checksum(action->data + (checksum_start - action->start_address),
+				checksum_end - checksum_start, &expected_crcs[checksum_num]);
+			if (retval != ERROR_OK)
+				goto done;
+
+			checksum_blocks[checksum_num].address = checksum_start;
+			checksum_blocks[checksum_num].size = checksum_end - checksum_start;
+			checksum_num++;
+		}
+	}
+
+	retval = target_checksum_memory_blocks(target, checksum_blocks, sector_num);
+	if (retval != ERROR_OK) {
+		LOG_WARNING("Initial flash checksum failed; programming all image sectors");
+		for (size_t i = 0; i < sector_num; i++)
+			checksum_blocks[i].crc = ~expected_crcs[i];
+	}
+
+	if (erase)
+		flash_set_dirty();
+	size_t checksum_index = 0;
+	for (size_t action_num = 0; action_num < action_count; action_num++) {
+		struct flash_program_action *action = &actions[action_num];
+
+		unsigned int sector_idx = action->start_sector;
+		while (sector_idx <= action->end_sector) {
+			if (expected_crcs[checksum_index] == checksum_blocks[checksum_index].crc) {
+				checksum_index++;
+				sector_idx++;
+				continue;
+			}
+
+			unsigned int sector_changed_first = sector_idx;
+			do {
+				checksum_index++;
+				sector_idx++;
+			} while (sector_idx <= action->end_sector
+				&& expected_crcs[checksum_index] != checksum_blocks[checksum_index].crc);
+			unsigned int sector_changed_last = sector_idx - 1;
+
+			target_addr_t changed_start =
+				action->bank->base + action->bank->sectors[sector_changed_first].offset;
+			target_addr_t changed_end = action->bank->base +
+				action->bank->sectors[sector_changed_last].offset +
+				action->bank->sectors[sector_changed_last].size;
+			target_addr_t write_start = MAX(changed_start, action->start_address);
+			target_addr_t write_end = MIN(changed_end, action->start_address + action->size);
+
+			if (unlock) {
+				retval = flash_unlock_address_range(target, changed_start, changed_end - changed_start);
+				if (retval != ERROR_OK)
+					goto done;
+			}
+			if (erase) {
+				retval = flash_driver_erase(action->bank, sector_changed_first, sector_changed_last);
+				if (retval != ERROR_OK)
+					goto done;
+			}
+
+			retval = flash_driver_write(action->bank,
+				action->data + (write_start - action->start_address),
+				write_start - action->bank->base, write_end - write_start);
+			if (retval != ERROR_OK)
+				goto done;
+		}
+	}
+
+	if (!verify)
+		goto done;
+
+	retval = target_checksum_memory_blocks(target, checksum_blocks, sector_num);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("Failed to calculate checksums for memory blocks");
+		goto done;
+	}
+	for (size_t i = 0; i < sector_num; i++) {
+		if (expected_crcs[i] != checksum_blocks[i].crc) {
+			LOG_ERROR("CRC mismatch after programming at block %zu: address " TARGET_ADDR_FMT
+				" size 0x%08" PRIx32 " expected 0x%08" PRIx32 " actual 0x%08" PRIx32,
+				i, checksum_blocks[i].address, checksum_blocks[i].size,
+				expected_crcs[i], checksum_blocks[i].crc);
+			retval = ERROR_FAIL;
+		}
+	}
+
+done:
+	for (size_t action_num = 0; action_num < action_count; action_num++)
+		free(actions[action_num].data);
+	free(expected_crcs);
+	free(checksum_blocks);
+	free(sections);
+	free(actions);
+	return retval;
+}
+
 struct flash_sector *alloc_block_array(uint32_t offset, uint32_t size,
 		unsigned int num_blocks)
 {

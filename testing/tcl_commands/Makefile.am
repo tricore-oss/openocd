@@ -4,6 +4,7 @@ TESTS =
 
 if DUMMY
 TESTS += \
+	test-flash-update-image-command.cfg \
 	test-target-create-command.cfg \
 	test-target-configure-cget-command.cfg
 endif

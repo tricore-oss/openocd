@@ -6129,6 +6129,53 @@ it has been removed by the @option{unlock} flag.
 
 @end deffn
 
+@deffn {Command} {flash update_image} [erase] [unlock] [verify] filename [offset [type]]
+Update the current target's flash bank(s) from @file{filename}, programming
+only sectors whose image-covered contents differ.
+The optional relocation @var{offset} and file @var{type} have the same
+meaning as for @command{flash write_image}.
+The target must be halted, and the flash must be accessible through
+the target's memory checksum operations.
+
+The optional leading keywords may be given in any order.
+@option{erase} erases changed sectors before programming, and
+@option{unlock} first unlocks the protection blocks covering those sectors.
+@option{verify} enables a final CRC comparison of all compared ranges.
+Erasing, unlocking, and final verification are disabled by default.
+Without @option{erase}, flash must already be erased or support the
+requested programming transitions.
+
+Nonempty image sections are processed in address order and split at
+flash bank boundaries. Overlapping sections or addresses outside the
+configured flash banks cause an error before any flash is erased.
+An image without nonempty sections does not change flash.
+
+The command compares CRCs in batches for the image-covered portions of
+each sector, including padding required by the flash bank's write
+alignment and gap settings. Sections sharing an erase sector are combined.
+Matching sectors are left unchanged; adjacent differing sectors may be
+programmed together, optionally unlocking and erasing them first.
+
+If the initial target checksum calculation fails, the command warns and
+programs all sectors covered by the prepared image instead, honoring the
+@option{erase} and @option{unlock} settings. With @option{verify}, all
+compared ranges are verified again using CRCs after programming.
+A checksum calculation failure or mismatch at this stage causes the
+command to fail. Without @option{verify}, successful programming is not
+confirmed by a final CRC comparison.
+
+@quotation Warning
+With @option{erase}, changed sectors are erased in their entirety.
+Existing data outside the programmed ranges of those sectors is not
+preserved, and gaps between sections may be filled with the bank's
+configured padding value.
+Matching image-covered bytes do not imply that bytes elsewhere in the
+same sector were checked. Back up any other data that must be preserved
+before using this command. Protection blocks unlocked with @option{unlock}
+are not automatically protected again and may cover neighboring sectors.
+@end quotation
+@end deffn
+
 @deffn {Command} {flash verify_image} filename [offset] [type]
 Verify the image @file{filename} to the current target's flash bank(s).
 Parameters follow the description of 'flash write_image'.

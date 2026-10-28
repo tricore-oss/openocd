@@ -55,6 +55,10 @@ doc/openocd.vr
 doc/version.texi
 src/openocd
 src/openocd.exe
+testing/flash-update
+testing/flash-update.exe
+testing/**/*.log
+testing/**/*.trs
 
 # configure/autotools output
 /build-aux/

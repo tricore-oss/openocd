@@ -176,6 +176,33 @@ int flash_write(struct target *target,
 		struct image *image, uint32_t *written, bool erase);
 
 /**
+ * Programs only the flash sectors that differ from an image.
+ *
+ * Image sections are sorted by address and split at flash bank boundaries.
+ * CRCs are compared in batches for the image-covered parts of each sector,
+ * including padding required by the bank's write alignment and gap settings.
+ * Adjacent changed sectors are programmed together, optionally unlocking and
+ * erasing them first. Sections sharing an erase sector are combined so that
+ * each sector is erased at most once. Bytes outside the programmed range of
+ * an erased sector are not preserved. Protection blocks unlocked by this
+ * operation are not automatically protected again.
+ *
+ * If the initial target CRC calculation fails, all covered sectors are
+ * programmed. If verification is enabled, all compared ranges are checked
+ * again after programming. An image without nonempty sections is a
+ * successful no-op.
+ *
+ * @param target The target containing the flash to be programmed.
+ * @param image The image to compare with and program into flash.
+ * @param erase Whether to erase changed sectors before programming.
+ * @param unlock Whether to unlock protection blocks covering changed sectors.
+ * @param verify Whether to check all compared ranges after programming using CRCs.
+ * @returns ERROR_OK if successful; otherwise, an error code.
+ */
+int flash_write_changed_unlock_verify(struct target *target, struct image *image,
+		bool erase, bool unlock, bool verify);
+
+/**
  * Forces targets to re-examine their erase/protection state.
  * This routine must be called when the system may modify the status.
  */

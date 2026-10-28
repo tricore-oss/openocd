@@ -460,6 +460,70 @@ COMMAND_HANDLER(handle_flash_write_image_command)
 	return retval;
 }
 
+COMMAND_HANDLER(handle_flash_update_image_command)
+{
+	struct target *target = get_current_target(CMD_CTX);
+	struct image image;
+	int retval;
+
+	bool auto_erase = false;
+	bool auto_unlock = false;
+	bool auto_verify = false;
+
+	while (CMD_ARGC) {
+		if (strcmp(CMD_ARGV[0], "erase") == 0) {
+			auto_erase = true;
+			command_print(CMD, "auto erase enabled");
+		} else if (strcmp(CMD_ARGV[0], "unlock") == 0) {
+			auto_unlock = true;
+			command_print(CMD, "auto unlock enabled");
+		} else if (strcmp(CMD_ARGV[0], "verify") == 0) {
+			auto_verify = true;
+			command_print(CMD, "auto verify enabled");
+		} else {
+			break;
+		}
+		CMD_ARGV++;
+		CMD_ARGC--;
+	}
+
+	if (CMD_ARGC < 1 || CMD_ARGC > 3)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (!target) {
+		LOG_ERROR("no target selected");
+		return ERROR_FAIL;
+	}
+
+	struct duration bench;
+	duration_start(&bench);
+
+	if (CMD_ARGC >= 2) {
+		image.base_address_set = true;
+		COMMAND_PARSE_NUMBER(llong, CMD_ARGV[1], image.base_address);
+	} else {
+		image.base_address_set = false;
+		image.base_address = 0x0;
+	}
+
+	image.start_address_set = false;
+
+	retval = image_open(&image, CMD_ARGV[0], (CMD_ARGC == 3) ? CMD_ARGV[2] : NULL);
+	if (retval != ERROR_OK)
+		return retval;
+
+	retval = flash_write_changed_unlock_verify(target, &image, auto_erase, auto_unlock, auto_verify);
+
+	if (retval == ERROR_OK && duration_measure(&bench) == ERROR_OK) {
+		command_print(CMD, "updated image from file %s in %fs",
+			CMD_ARGV[0], duration_elapsed(&bench));
+	}
+
+	image_close(&image);
+
+	return retval;
+}
+
 COMMAND_HANDLER(handle_flash_verify_image_command)
 {
 	struct target *target = get_current_target(CMD_CTX);
@@ -1320,6 +1384,16 @@ static const struct command_registration flash_exec_command_handlers[] = {
 		.usage = "filename [offset [file_type]]",
 		.help = "Verify an image against flash. Allow optional "
 			"offset from beginning of bank (defaults to zero)",
+	},
+	{
+		.name = "update_image",
+		.handler = handle_flash_update_image_command,
+		.mode = COMMAND_EXEC,
+		.usage = "[erase] [unlock] [verify] filename [offset [file_type]]",
+		.help = "Program only flash sectors that differ from an image. "
+			"Optionally unlock and/or erase changed sectors first, "
+			"and verify after programming. Add an optional offset "
+			"to all image section addresses (defaults to zero).",
 	},
 	{
 		.name = "read_bank",
