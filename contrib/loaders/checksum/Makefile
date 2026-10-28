@@ -14,7 +14,18 @@ RISCV_OBJCOPY ?= $(RISCV_CROSS_COMPILE)objcopy
 RISCV32_CFLAGS = -march=rv32e -mabi=ilp32e -nostdlib -nostartfiles -Os -fPIC
 RISCV64_CFLAGS = -march=rv64i -mabi=lp64 -nostdlib -nostartfiles -Os -fPIC
 
-all:	arm riscv
+
+TRICORE_CROSS_COMPILE ?= tricore-elf-
+TRICORE_CC      ?= $(TRICORE_CROSS_COMPILE)gcc
+TRICORE_AS      ?= $(TRICORE_CROSS_COMPILE)as
+TRICORE_OBJCOPY ?= $(TRICORE_CROSS_COMPILE)objcopy
+
+TRICORE_CFLAGS = -O3 -ffreestanding -nostdlib -fomit-frame-pointer -Wall -fno-unroll-loops \
+	-nostartfiles -Wl,-T,tricore.ld
+
+all:	arm riscv tricore
+
+tricore: tricore.inc tricore_crc_blocks.inc
 
 arm: armv4_5_crc.inc armv7m_crc.inc
 
@@ -43,6 +54,12 @@ riscv64_%.elf:	riscv_%.c
 
 riscv%.bin:	riscv%.elf
 	$(RISCV_OBJCOPY) -Obinary $< $@
+
+tricore.bin: tricore.elf
+	$(TRICORE_OBJCOPY) -Obinary $< $@
+
+tricore.elf: tricore-crc.c tricore-vectors.S tricore-crc.S tricore.ld
+	$(TRICORE_CC) $(TRICORE_CFLAGS) -mcpu=tc39xx tricore-crc.c tricore-vectors.S tricore-crc.S -o $@
 
 clean:
 	-rm -f *.elf *.bin *.inc

@@ -10,6 +10,8 @@
 *.lo
 *.la
 *.in
+*.elf
+*.bin
 
 # coverage files (gcov)
 *.gcda

@@ -79,6 +79,7 @@ static const struct {
 	{.name = "psw", .addr = 0xFE04},
 	{.name = "pc", .addr = 0xFE08},
 	{.name = "icr", .addr = 0xFE2C},
+	{.name = "btv", .addr = TRICORE_BTV},
 };
 
 static struct reg_feature tricore_core_feature = {
@@ -827,10 +828,17 @@ static const uint8_t tricore_crc_program[] = {
 #include "contrib/loaders/checksum/tricore.inc"
 };
 
+#define TRICORE_CRC_PROGRAM_ADDRESS 0x70100000
+#define TRICORE_CRC_ENTRY_OFFSET 0x100
+#define TRICORE_CRC_EXIT_OFFSET (ARRAY_SIZE(tricore_crc_program) - 6)
+
 int tricore_checksum_memory(struct target *target, target_addr_t address, uint32_t count, uint32_t *checksum)
 {
 
 	int ret;
+	const target_addr_t crc_program_address = TRICORE_CRC_PROGRAM_ADDRESS;
+	const target_addr_t crc_entry_point = crc_program_address + TRICORE_CRC_ENTRY_OFFSET;
+	const target_addr_t crc_exit_point = crc_program_address + TRICORE_CRC_EXIT_OFFSET;
 	const size_t crc_code_size = ARRAY_SIZE(tricore_crc_program);
 
 	if (count < crc_code_size * 4) {
@@ -840,12 +848,12 @@ int tricore_checksum_memory(struct target *target, target_addr_t address, uint32
 		return ERROR_FAIL;
 	}
 
-	if (0x70100000 + crc_code_size > address && 0x70100000 < address + count) {
+	if (crc_program_address + crc_code_size > address && crc_program_address < address + count) {
 		LOG_TARGET_ERROR(target, "Memory range overlaps with CRC program");
 		return ERROR_FAIL;
 	}
 
-	ret = target_write_memory(target, 0x70100000, 4, ARRAY_SIZE(tricore_crc_program), tricore_crc_program);
+	ret = target_write_memory(target, crc_program_address, 4, ARRAY_SIZE(tricore_crc_program), tricore_crc_program);
 	if (ret) {
 		LOG_TARGET_ERROR(target, "Failed to write CRC program to target");
 		return ret;
@@ -855,15 +863,17 @@ int tricore_checksum_memory(struct target *target, target_addr_t address, uint32
 		{.reg_name = "a4", .size = 32, .value = (uint8_t *)&address, .direction = PARAM_OUT},
 		{.reg_name = "d4", .size = 32, .value = (uint8_t *)&count, .direction = PARAM_OUT},
 		{.reg_name = "d2", .size = 32, .value = (uint8_t *)checksum, .direction = PARAM_IN},
+		{.reg_name = "btv", .size = 32, .value = (uint8_t *)&crc_program_address, .direction = PARAM_OUT},
 	};
 
-	ret = target_run_algorithm(target, 0, NULL, 3, reg_params, 0x70100000, 0, 100, NULL);
+	ret = target_run_algorithm(target, 0, NULL, ARRAY_SIZE(reg_params), reg_params,
+		crc_entry_point, crc_exit_point, 100, NULL);
 	if (ret) {
 		LOG_TARGET_ERROR(target, "Failed to run CRC program on target");
 		return ret;
 	}
 
-	return ERROR_FAIL;
+	return ERROR_OK;
 }
 
 int tricore_blank_check_memory(struct target *target, struct target_memory_check_block *blocks, int num_blocks,
