@@ -828,9 +828,14 @@ static const uint8_t tricore_crc_program[] = {
 #include "contrib/loaders/checksum/tricore.inc"
 };
 
+static const uint8_t tricore_crc_blocks_program[] = {
+#include "contrib/loaders/checksum/tricore_crc_blocks.inc"
+};
+
 #define TRICORE_CRC_PROGRAM_ADDRESS 0x70100000
 #define TRICORE_CRC_ENTRY_OFFSET 0x100
 #define TRICORE_CRC_EXIT_OFFSET (ARRAY_SIZE(tricore_crc_program) - 6)
+#define TRICORE_CRC_BLOCKS_EXIT_OFFSET (ARRAY_SIZE(tricore_crc_blocks_program) - 6)
 
 int tricore_checksum_memory(struct target *target, target_addr_t address, uint32_t count, uint32_t *checksum)
 {
@@ -874,6 +879,143 @@ int tricore_checksum_memory(struct target *target, target_addr_t address, uint32
 	}
 
 	return ERROR_OK;
+}
+
+int tricore_checksum_memory_blocks(struct target *target,
+		struct target_memory_checksum_block *blocks, unsigned int num_blocks)
+{
+	const target_addr_t crc_program_address = TRICORE_CRC_PROGRAM_ADDRESS;
+	const target_addr_t crc_entry_point = crc_program_address + TRICORE_CRC_ENTRY_OFFSET;
+	const target_addr_t crc_exit_point = crc_program_address + TRICORE_CRC_BLOCKS_EXIT_OFFSET;
+	const size_t crc_code_size = ARRAY_SIZE(tricore_crc_blocks_program);
+	struct tricore_info *tricore = target_to_tricore(target);
+	struct ocmts *ocmts = tricore->ocmts;
+	struct working_area *input_area = NULL;
+	struct working_area *crc_area = NULL;
+	struct crc_input {
+		uint32_t address;
+		uint32_t size;
+	} *inputs = NULL;
+	uint32_t *crcs = NULL;
+	int retval = ERROR_OK;
+
+	if (num_blocks == 0)
+		return ERROR_OK;
+
+	inputs = calloc(num_blocks, sizeof(*inputs));
+	crcs = calloc(num_blocks, sizeof(*crcs));
+	if (!inputs || !crcs) {
+		retval = ERROR_FAIL;
+		goto cleanup;
+	}
+
+	retval = target_alloc_working_area(target, num_blocks * sizeof(*inputs), &input_area);
+	if (retval != ERROR_OK)
+		goto cleanup;
+
+	retval = target_alloc_working_area(target, num_blocks * sizeof(*crcs), &crc_area);
+	if (retval != ERROR_OK)
+		goto cleanup;
+
+	if (input_area->address + input_area->size > crc_program_address &&
+			input_area->address < crc_program_address + crc_code_size) {
+		LOG_TARGET_ERROR(target, "CRC input list overlaps with CRC program");
+		retval = ERROR_FAIL;
+		goto cleanup;
+	}
+	if (crc_area->address + crc_area->size > crc_program_address &&
+			crc_area->address < crc_program_address + crc_code_size) {
+		LOG_TARGET_ERROR(target, "CRC output list overlaps with CRC program");
+		retval = ERROR_FAIL;
+		goto cleanup;
+	}
+
+	for (unsigned int block_num = 0; block_num < num_blocks; block_num++) {
+		struct target_memory_checksum_block *block = &blocks[block_num];
+		inputs[block_num].address = block->address;
+		inputs[block_num].size = block->size;
+		if (input_area->address + input_area->size > block->address &&
+				input_area->address < block->address + block->size) {
+			LOG_TARGET_ERROR(target, "Memory range overlaps with CRC input list");
+			retval = ERROR_FAIL;
+			goto cleanup;
+		}
+		if (crc_area->address + crc_area->size > block->address &&
+				crc_area->address < block->address + block->size) {
+			LOG_TARGET_ERROR(target, "Memory range overlaps with CRC output list");
+			retval = ERROR_FAIL;
+			goto cleanup;
+		}
+		if (crc_program_address + crc_code_size > block->address &&
+				crc_program_address < block->address + block->size) {
+			LOG_TARGET_ERROR(target, "Memory range overlaps with CRC program");
+			retval = ERROR_FAIL;
+			goto cleanup;
+		}
+	}
+
+	for (size_t offset = 0; offset < num_blocks * sizeof(*inputs) / 4; offset += 256) {
+		retval = ocmts_queue_write_block(ocmts, input_area->address + offset * 4,
+										 ((uint8_t*)inputs) + offset * 4,
+										 MIN(256, num_blocks * sizeof(*inputs) / 4));
+		if (retval != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to write CRC input list to target");
+			goto cleanup;
+		}
+	}
+
+	retval = ocmts_queue_write_block(ocmts, crc_area->address, crcs,
+		num_blocks * sizeof(*crcs) / 4);
+	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to initialize CRC output list on target");
+		goto cleanup;
+	}
+
+	retval = ocmts_queue_write_block(ocmts, crc_program_address,
+			tricore_crc_blocks_program, crc_code_size / 4);
+	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to write CRC blocks program to target");
+		goto cleanup;
+	}
+
+	retval = ocmts_run(ocmts);
+	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to write CRC data to target");
+		goto cleanup;
+	}
+
+	struct reg_param reg_params[] = {
+		{.reg_name = "a4", .size = 32, .value = (uint8_t *)&input_area->address,
+			.direction = PARAM_OUT},
+		{.reg_name = "a5", .size = 32, .value = (uint8_t *)&crc_area->address,
+			.direction = PARAM_OUT},
+		{.reg_name = "d4", .size = 32, .value = (uint8_t *)&num_blocks,
+			.direction = PARAM_OUT},
+		{.reg_name = "btv", .size = 32, .value = (uint8_t *)&crc_program_address,
+			.direction = PARAM_OUT},
+	};
+	retval = target_run_algorithm(target, 0, NULL, ARRAY_SIZE(reg_params),
+			reg_params, crc_entry_point, crc_exit_point, 100, NULL);
+	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to run CRC blocks program on target");
+		goto cleanup;
+	}
+
+	retval = target_read_buffer(target, crc_area->address,
+			num_blocks * sizeof(*crcs), (uint8_t *)crcs);
+	if (retval == ERROR_OK) {
+		for (unsigned int block_num = 0; block_num < num_blocks; block_num++)
+			blocks[block_num].crc = crcs[block_num];
+	}
+
+cleanup:
+	if (crc_area)
+		target_free_working_area(target, crc_area);
+	if (input_area)
+		target_free_working_area(target, input_area);
+	free(crcs);
+	free(inputs);
+	return retval;
 }
 
 int tricore_blank_check_memory(struct target *target, struct target_memory_check_block *blocks, int num_blocks,
@@ -1748,6 +1890,7 @@ struct target_type tricore_target = {
 	.write_memory = tricore_write_memory,
 
 	.checksum_memory = tricore_checksum_memory,
+	.checksum_memory_blocks = tricore_checksum_memory_blocks,
 
 	.get_gdb_arch = tricore_get_gdb_arch,
 	.get_gdb_reg_list = tricore_get_gdb_reg_list,

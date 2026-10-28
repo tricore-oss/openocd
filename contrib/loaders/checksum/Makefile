@@ -61,5 +61,11 @@ tricore.bin: tricore.elf
 tricore.elf: tricore-crc.c tricore-vectors.S tricore-crc.S tricore.ld
 	$(TRICORE_CC) $(TRICORE_CFLAGS) -mcpu=tc39xx tricore-crc.c tricore-vectors.S tricore-crc.S -o $@
 
+tricore_crc_blocks.bin: tricore_crc_blocks.elf
+	$(TRICORE_OBJCOPY) -Obinary $< $@
+
+tricore_crc_blocks.elf: tricore-crc-blocks.c tricore-vectors.S tricore-crc.S tricore.ld
+	$(TRICORE_CC) $(TRICORE_CFLAGS) -mcpu=tc39xx tricore-crc-blocks.c tricore-vectors.S tricore-crc.S -o $@
+
 clean:
 	-rm -f *.elf *.bin *.inc
